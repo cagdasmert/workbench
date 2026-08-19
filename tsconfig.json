@@ -24,6 +24,9 @@
     },
     {
       "path": "plugins/image-viewer"
+    },
+    {
+      "path": "plugins/json-tools"
     }
   ]
 }

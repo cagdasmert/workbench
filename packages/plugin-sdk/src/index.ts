@@ -76,6 +76,18 @@ export interface PluginContext {
     readFile(path: string): Promise<Uint8Array<ArrayBuffer>>;
   };
 
+  /**
+   * Per-plugin key/value storage, persisted across restarts and scoped to this
+   * plugin's id. Values must be JSON-serializable — that is enforced by the type
+   * rather than discovered at runtime when a `Map` silently round-trips to `{}`.
+   *
+   * `delete` is deliberately absent until something needs it.
+   */
+  storage: {
+    get<T extends JsonValue>(key: string): Promise<T | undefined>;
+    set<T extends JsonValue>(key: string, value: T): Promise<void>;
+  };
+
   workspace: {
     openPanel(panelId: string): Promise<void>;
     closePanel(panelId: string): Promise<void>;
@@ -87,6 +99,15 @@ export interface PluginContext {
 
   log: Logger;
 }
+
+/** Anything that survives a JSON round trip, and nothing that doesn't. */
+export type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | JsonValue[]
+  | { [key: string]: JsonValue };
 
 /** Extensions carry no leading dot: `['png', 'jpg']`. */
 export interface FileFilter {

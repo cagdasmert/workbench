@@ -7,6 +7,7 @@ import { registerPluginScheme, handlePluginProtocol } from './protocol.js';
 import { buildMenu } from './menu.js';
 import { watchPluginBuilds } from './watcher.js';
 import { registerFsBroker } from './fs-broker.js';
+import { registerStorageBroker } from './storage-broker.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -88,6 +89,7 @@ app.whenReady().then(async () => {
 
   const win = createWindow();
   registerFsBroker(win);
+  registerStorageBroker();
   buildMenu(manifests, win);
 
   // Dev only: the orchestrator builds, main just notices the output changed.

@@ -1,0 +1,16 @@
+{
+  "id": "json-tools",
+  "name": "JSON Tools",
+  "version": "1.0.0",
+  "apiVersion": "1.0",
+  "main": "./dist/index.js",
+  "activationEvents": ["onCommand:json.open"],
+  "contributes": {
+    "panels":   [{ "id": "json.main", "title": "JSON" }],
+    "menu":     [{ "command": "json.open", "label": "JSON Tools", "group": "viewers" }],
+    "commands": [{ "id": "json.open", "title": "Open JSON Tools" }],
+    "accepts":  ["application/json", "text/plain"],
+    "emits":    ["application/json"]
+  },
+  "permissions": ["fs:read:user-selected"]
+}

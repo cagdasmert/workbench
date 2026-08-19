@@ -22,6 +22,8 @@ const bridge: WorkbenchHostBridge = {
   notify: async () => undefined,
   pickFile: async () => undefined,
   readFile: async () => new Uint8Array(),
+  storageGet: async () => undefined,
+  storageSet: async () => undefined,
   onCommand: () => () => undefined,
   onPluginChanged: () => () => undefined,
 };
@@ -215,6 +217,38 @@ describe('contributions', () => {
     ]);
     expect(bytes).toEqual(new Uint8Array([1, 2, 3]));
     expect(host.get(PLUGIN_ID)?.state).toBe('active');
+  });
+
+  it('scopes ctx.storage to the calling plugin id', async () => {
+    const writes: string[] = [];
+    const store = new Map<string, unknown>();
+    const storageBridge: WorkbenchHostBridge = {
+      ...bridge,
+      storageGet: async (id, key) => store.get(`${id}/${key}`) as never,
+      storageSet: async (id, key, value) => {
+        writes.push(`${id}/${key}`);
+        store.set(`${id}/${key}`, value);
+      },
+    };
+
+    let roundTripped: unknown;
+    const plugin: Plugin = {
+      async activate(ctx) {
+        await ctx.storage.set('doc', { text: '{"a":1}', expanded: ['$'] });
+        roundTripped = await ctx.storage.get('doc');
+      },
+    };
+    const host = createPluginHost({
+      bridge: storageBridge,
+      importModule: async () => ({ plugin }),
+    });
+    host.load([manifest()]);
+
+    await host.activate(PLUGIN_ID);
+
+    // the plugin never names itself — the host supplies the scope
+    expect(writes).toEqual(['test/doc']);
+    expect(roundTripped).toEqual({ text: '{"a":1}', expanded: ['$'] });
   });
 
   it('marks a plugin failed when the module exports no activate()', async () => {

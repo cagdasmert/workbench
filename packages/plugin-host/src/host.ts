@@ -292,6 +292,11 @@ export class PluginHost {
         readFile: async (filePath) => this.bridge.readFile(filePath),
       },
 
+      storage: {
+        get: async (key) => await this.bridge.storageGet(pluginId, key) as never,
+        set: async (key, value) => { await this.bridge.storageSet(pluginId, key, value); },
+      },
+
       workspace: {
         openPanel: async (panelId) => {
           if (!this.panels.has(panelId)) {

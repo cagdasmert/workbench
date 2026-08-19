@@ -17,6 +17,11 @@ contextBridge.exposeInMainWorld('workbenchHost', {
   pickFile: (filters?: unknown) => ipcRenderer.invoke('fs:pickFile', filters),
   readFile: (path: string) => ipcRenderer.invoke('fs:readFile', path),
 
+  storageGet: (pluginId: string, key: string) =>
+    ipcRenderer.invoke('storage:get', pluginId, key),
+  storageSet: (pluginId: string, key: string, value: unknown) =>
+    ipcRenderer.invoke('storage:set', pluginId, key, value),
+
   onCommand: (cb: (commandId: string) => void) => {
     const listener = (_e: unknown, id: string) => cb(id);
     ipcRenderer.on('command:invoke', listener);
