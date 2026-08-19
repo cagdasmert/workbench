@@ -10,6 +10,7 @@ import { registerFsBroker } from './fs-broker.js';
 import { registerStorageBroker } from './storage-broker.js';
 import { registerNetBroker, loadNetPermissions } from './net-broker.js';
 import { registerSettingsBroker, loadSettingsSchemas } from './settings-broker.js';
+import { loadPluginState, registerPluginStateBroker, disabledIds } from './plugin-state.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -73,6 +74,8 @@ app.whenReady().then(async () => {
   installCsp();
   handlePluginProtocol();
 
+  await loadPluginState();
+
   const manifests = await scanPlugins(PLUGIN_DEV_DIR);
   console.log(
     `[plugins] discovered ${manifests.length} in ${PLUGIN_DEV_DIR}:`,
@@ -84,6 +87,7 @@ app.whenReady().then(async () => {
   loadSettingsSchemas(manifests);
 
   ipcMain.handle('plugins:list', () => manifests);
+  ipcMain.handle('plugins:disabledIds', () => disabledIds());
 
   // Treat everything arriving from the renderer as untrusted — it is a local
   // RPC boundary, not a function call.
@@ -94,6 +98,7 @@ app.whenReady().then(async () => {
 
   const win = createWindow();
   registerFsBroker(win);
+  registerPluginStateBroker(win, () => buildMenu(manifests, win));
   registerStorageBroker();
   registerNetBroker();
   registerSettingsBroker((pluginId, key, value) => {

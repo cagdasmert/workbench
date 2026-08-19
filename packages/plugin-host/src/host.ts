@@ -87,6 +87,8 @@ export class PluginHost {
   private readonly routeListeners = new Set<(choice: RouteChoice) => void>();
   private readonly noticeListeners = new Set<(msg: string) => void>();
 
+  private readonly disabled = new Set<string>();
+
   private activePanelId: string | undefined;
   private activePayload: Content | undefined;
   /** True while reload() is swapping a module: the panel is coming straight back,
@@ -119,11 +121,39 @@ export class PluginHost {
     return this.registry.get(pluginId);
   }
 
+  // ── enable / disable ─────────────────────────────────────────────
+
+  setDisabledIds(ids: string[]): void {
+    this.disabled.clear();
+    for (const id of ids) this.disabled.add(id);
+  }
+
+  isDisabled(pluginId: string): boolean {
+    return this.disabled.has(pluginId);
+  }
+
+  /**
+   * A disabled plugin contributes nothing and cannot be woken. Disabling one
+   * that is already active tears it down through the normal disposal path, so
+   * "disabled" and "never activated" look identical to the rest of the shell.
+   */
+  async setEnabled(pluginId: string, enabled: boolean): Promise<void> {
+    if (enabled) {
+      this.disabled.delete(pluginId);
+    } else {
+      this.disabled.add(pluginId);
+      const rec = this.registry.get(pluginId);
+      if (rec !== undefined && rec.state === 'active') await this.deactivate(pluginId);
+    }
+    for (const cb of this.reloadListeners) cb(pluginId);
+  }
+
   // ── activation ───────────────────────────────────────────────────
 
   async activate(pluginId: string): Promise<void> {
     const rec = this.registry.get(pluginId);
     if (rec === undefined) return;
+    if (this.disabled.has(pluginId)) return;
     if (rec.state === 'active' || rec.state === 'activating') return;
 
     rec.state = 'activating';
@@ -252,6 +282,7 @@ export class PluginHost {
     const seen = new Set<string>();
 
     for (const rec of this.registry.values()) {
+      if (this.disabled.has(rec.manifest.id)) continue;
       for (const cmd of rec.manifest.contributes.commands ?? []) {
         seen.add(cmd.id);
         out.push({
@@ -324,6 +355,7 @@ export class PluginHost {
    */
   private candidatesFor(type: string, excludePluginId?: string): PluginRecord[] {
     return [...this.registry.values()].filter((rec) => {
+      if (this.disabled.has(rec.manifest.id)) return false;
       if (rec.manifest.id === excludePluginId) return false;   // never route to self
       const accepts = rec.manifest.contributes.accepts ?? [];
       return accepts.includes(type) || accepts.includes('*');

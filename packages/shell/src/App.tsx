@@ -8,6 +8,7 @@ import type { PluginManifest } from '@workbench/plugin-sdk';
 import { PanelHost } from './PanelHost.js';
 import { CommandPalette } from './CommandPalette.js';
 import { SettingsPanel } from './SettingsPanel.js';
+import { PluginManager } from './PluginManager.js';
 
 export function App() {
   const [host] = useState(() => createPluginHost());
@@ -16,7 +17,11 @@ export function App() {
 
   useEffect(() => {
     void (async () => {
-      const discovered = await window.workbenchHost.listPlugins();
+      const [discovered, disabled] = await Promise.all([
+        window.workbenchHost.listPlugins(),
+        window.workbenchHost.disabledPlugins(),
+      ]);
+      host.setDisabledIds(disabled);      // before load, so nothing can wake early
       host.load(discovered);
       setManifests(discovered);
     })();
@@ -26,6 +31,7 @@ export function App() {
 
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [pluginsOpen, setPluginsOpen] = useState(false);
   const [route, setRoute] = useState<RouteChoice | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -59,6 +65,12 @@ export function App() {
       }),
       host.registerShellCommand('shell.openSettings', 'Open Settings', async () => {
         setSettingsOpen(true);
+      }),
+      host.registerShellCommand('shell.openPlugins', 'Open Plugin Manager', async () => {
+        setPluginsOpen(true);
+      }),
+      host.registerShellCommand('shell.commandPalette', 'Show Command Palette', async () => {
+        setPaletteOpen(true);
       }),
     ];
     return () => { for (const d of disposables) void d.dispose(); };
@@ -117,9 +129,12 @@ export function App() {
         </span>
       </header>
       <main className="shell-workspace">
-        <PanelHost panel={panel} />
+        <PanelHost panel={panel} onReload={(pluginId) => void host.reload(pluginId)} />
       </main>
       {notice !== null && <div className="shell-toast">{notice}</div>}
+      {pluginsOpen && (
+        <PluginManager host={host} revision={revision} onClose={() => setPluginsOpen(false)} />
+      )}
       {settingsOpen && (
         <SettingsPanel manifests={manifests} onClose={() => setSettingsOpen(false)} />
       )}

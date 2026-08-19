@@ -23,6 +23,9 @@ const bridge: WorkbenchHostBridge = {
   pickFile: async () => undefined,
   readFile: async () => new Uint8Array(),
   netFetch: async () => ({ status: 200, ok: true, headers: {}, body: '' }),
+  disabledPlugins: async () => [],
+  setPluginEnabled: async () => undefined,
+  onPluginEnabledChanged: () => () => undefined,
   settingsGet: async () => undefined,
   settingsAll: async () => ({}),
   settingsSchemas: async () => ({}),
@@ -417,6 +420,58 @@ describe('contributions', () => {
     expect(listed.find((c) => c.id === 'test.args')?.args?.required).toEqual(['n']);
     // still not activated — listing must not have side effects
     expect(host.get(PLUGIN_ID)?.state).toBe('discovered');
+  });
+
+  it('makes a disabled plugin contribute nothing', async () => {
+    let activations = 0;
+    const plugin: Plugin = {
+      activate(ctx) {
+        activations += 1;
+        ctx.registerCommand('test.open', () => undefined);
+      },
+    };
+    const host = hostFor(plugin, manifest({
+      contributes: { commands: [{ id: 'test.open', title: 'Open Test' }], accepts: ['text/plain'] },
+    }));
+
+    await host.setEnabled(PLUGIN_ID, false);
+    await host.invokeCommand('test.open');
+
+    expect(activations).toBe(0);
+    expect(host.listCommands()).toEqual([]);
+    expect(host.get(PLUGIN_ID)?.state).toBe('discovered');
+
+    // and it is not a routing candidate
+    const notices: string[] = [];
+    host.onNotice((m) => notices.push(m));
+    await host.emit({ type: 'text/plain', data: 'x' });
+    expect(notices).toEqual(['No plugin accepts text/plain']);
+
+    // re-enabling restores everything
+    await host.setEnabled(PLUGIN_ID, true);
+    await host.invokeCommand('test.open');
+    expect(activations).toBe(1);
+    expect(host.listCommands().map((c) => c.id)).toEqual(['test.open']);
+  });
+
+  it('tears down an active plugin when it is disabled', async () => {
+    let disposed = false;
+    const plugin: Plugin = {
+      activate(ctx) { ctx.registerPanel('test.main', { mount: () => undefined }); },
+      deactivate() { disposed = true; },
+    };
+    const host = hostFor(plugin, manifest({
+      contributes: { panels: [{ id: 'test.main', title: 'T' }] },
+    }));
+
+    await host.activate(PLUGIN_ID);
+    expect(host.getPanel('test.main')).toBeDefined();
+
+    await host.setEnabled(PLUGIN_ID, false);
+
+    expect(disposed).toBe(true);
+    expect(host.get(PLUGIN_ID)?.state).toBe('disposed');
+    expect(host.getPanel('test.main')).toBeUndefined();
   });
 
   it('marks a plugin failed when the module exports no activate()', async () => {

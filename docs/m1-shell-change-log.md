@@ -500,3 +500,48 @@ That is now **three** distinct papercuts every stateful plugin hits. `tools/crea
 gone from a nice-to-have to the thing that stops the same three bugs being rediscovered.
 
 **Contract impact:** none.
+
+---
+
+## 16 · Disabling a plugin has to be enforced twice
+
+**Feature:** plugin manager · **Verdict:** shell/main work — no contract change
+
+"Disabled" lives in two places at once, and both are load-bearing:
+
+- **main** persists the list, filters the native menu, and rebuilds it;
+- **the host** refuses activation, hides the plugin's commands from the palette, drops it from
+  the content-bus routing table, and tears it down if it was already active.
+
+Neither alone is enough. Main-only leaves a disabled plugin reachable from the palette and the
+bus. Host-only leaves its entry in the macOS menu, where clicking does nothing. The manager
+writes both, in that order, and the two must not drift.
+
+Verified across a full cycle: disabling `image-viewer` removed it from the native menu, emptied
+its commands, and made `image/svg+xml` produce *"No plugin accepts image/svg+xml"* where it had
+previously routed. Re-enabling restored the menu entry, the command, and the routing.
+
+Disabling an **active** plugin runs the normal disposal path, so "disabled" and "never
+activated" look identical to everything downstream.
+
+**This also closes a known gap.** Menus were built once at startup — a documented limitation
+since M0. Enable/disable needed a rebuild anyway, so `buildMenu` is now called on change rather
+than only at boot.
+
+---
+
+## 17 · The error card finally has the button it promised
+
+**Feature:** plugin manager · **Verdict:** promise kept
+
+Architecture §4.4 specifies "a failure card with the stack trace and a **Reload plugin**
+button". Since M0 the card has had the stack trace and no button — the reload path existed
+(`host.reload`) but nothing in the failure UI reached it.
+
+`PanelHost` now passes an `onReload` callback into `renderErrorCard`, so a plugin that throws
+during `mount` can be fixed and reloaded without touching the app. The plugin manager lists
+every plugin's state with its stack trace and offers the same action, plus its declared
+permissions — which is the first time `permissions` has been *shown* anywhere, four milestones
+after being declared.
+
+**Contract impact:** none.

@@ -14,6 +14,9 @@ export interface WorkbenchHostBridge {
   pickFile(filters?: FileFilter[]): Promise<string | undefined>;
   readFile(path: string): Promise<Uint8Array<ArrayBuffer>>;
   netFetch(pluginId: string, url: string, init?: NetRequestInit): Promise<NetResponse>;
+  disabledPlugins(): Promise<string[]>;
+  setPluginEnabled(pluginId: string, enabled: boolean): Promise<void>;
+  onPluginEnabledChanged(cb: (pluginId: string, enabled: boolean) => void): () => void;
   settingsGet(pluginId: string, key: string): Promise<JsonValue | undefined>;
   settingsAll(pluginId: string): Promise<Record<string, JsonValue>>;
   settingsSchemas(): Promise<Record<string, SettingsSchema>>;

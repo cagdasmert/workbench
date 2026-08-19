@@ -20,6 +20,15 @@ contextBridge.exposeInMainWorld('workbenchHost', {
   netFetch: (pluginId: string, url: string, init?: unknown) =>
     ipcRenderer.invoke('net:fetch', pluginId, url, init),
 
+  disabledPlugins: () => ipcRenderer.invoke('plugins:disabled'),
+  setPluginEnabled: (pluginId: string, enabled: boolean) =>
+    ipcRenderer.invoke('plugins:setEnabled', pluginId, enabled),
+  onPluginEnabledChanged: (cb: (pluginId: string, enabled: boolean) => void) => {
+    const listener = (_e: unknown, id: string, enabled: boolean) => cb(id, enabled);
+    ipcRenderer.on('plugins:enabledChanged', listener);
+    return () => ipcRenderer.off('plugins:enabledChanged', listener);
+  },
+
   settingsGet: (pluginId: string, key: string) =>
     ipcRenderer.invoke('settings:get', pluginId, key),
   settingsAll: (pluginId: string) => ipcRenderer.invoke('settings:all', pluginId),
