@@ -96,6 +96,14 @@ export interface PluginContext {
   fs: {
     pickFile(filters?: FileFilter[]): Promise<string | undefined>;
     /**
+     * Grants read access to the chosen directory and everything inside it, for
+     * this session. Picking a folder is a broader grant than picking a file, and
+     * deliberately so — a folder browser is unusable otherwise.
+     */
+    pickDirectory(): Promise<string | undefined>;
+    /** One level only. Recursion is the plugin's decision, not the host's. */
+    readDir(path: string): Promise<DirEntry[]>;
+    /**
      * Backed by a plain `ArrayBuffer`, never a `SharedArrayBuffer`. Stating that
      * in the type is what lets a plugin pass the result straight to `Blob`,
      * `createImageBitmap` or a `DataView` without a cast or a defensive copy.
@@ -251,6 +259,16 @@ export type JsonValue =
 export interface KeybindingContribution {
   command: string;
   key: string;
+}
+
+export interface DirEntry {
+  name: string;
+  /** Absolute, and already symlink-resolved by the host. */
+  path: string;
+  isDirectory: boolean;
+  size: number;
+  /** Epoch millis, so a plugin can sort by date without another round trip. */
+  modified: number;
 }
 
 /** Extensions carry no leading dot: `['png', 'jpg']`. */

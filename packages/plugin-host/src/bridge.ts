@@ -1,5 +1,5 @@
 import type {
-  FileFilter, JsonValue, NetRequestInit, NetResponse, PluginManifest, SettingsSchema,
+  DirEntry, FileFilter, JsonValue, NetRequestInit, NetResponse, PluginManifest, SettingsSchema,
 } from '@workbench/plugin-sdk';
 
 /**
@@ -12,6 +12,8 @@ export interface WorkbenchHostBridge {
   listPlugins(): Promise<PluginManifest[]>;
   notify(message: string, level?: string): Promise<void>;
   pickFile(filters?: FileFilter[]): Promise<string | undefined>;
+  pickDirectory(): Promise<string | undefined>;
+  readDir(path: string): Promise<DirEntry[]>;
   readFile(path: string): Promise<Uint8Array<ArrayBuffer>>;
   netFetch(pluginId: string, url: string, init?: NetRequestInit): Promise<NetResponse>;
   session(): Promise<{ activePanelId?: string }>;

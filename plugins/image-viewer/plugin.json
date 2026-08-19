@@ -4,13 +4,45 @@
   "version": "1.0.0",
   "apiVersion": "1.0",
   "main": "./dist/index.js",
-  "activationEvents": ["onCommand:image.open"],
+  "activationEvents": [
+    "onCommand:image.open"
+  ],
   "contributes": {
-    "panels":   [{ "id": "image.main", "title": "Image" }],
-    "menu":     [{ "command": "image.open", "label": "Image Viewer", "group": "viewers" }],
-    "commands": [{ "id": "image.open", "title": "Open Image Viewer" }],
-    "accepts":  ["image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml"],
-    "emits":    []
+    "panels": [
+      {
+        "id": "image.main",
+        "title": "Image"
+      }
+    ],
+    "menu": [
+      {
+        "command": "image.open",
+        "label": "Image Viewer",
+        "group": "viewers"
+      }
+    ],
+    "commands": [
+      {
+        "id": "image.open",
+        "title": "Open Image Viewer"
+      }
+    ],
+    "accepts": [
+      "image/png",
+      "image/jpeg",
+      "image/gif",
+      "image/webp",
+      "image/svg+xml"
+    ],
+    "emits": [],
+    "keybindings": [
+      {
+        "command": "image.open",
+        "key": "cmd+shift+i"
+      }
+    ]
   },
-  "permissions": ["fs:read:user-selected"]
+  "permissions": [
+    "fs:read:user-selected"
+  ]
 }

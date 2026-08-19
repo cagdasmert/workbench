@@ -928,3 +928,47 @@ reopened the JSON panel as a bonus, which is the same code path a fresh launch u
 **On `npm run dev`:** it keeps running after you close the window, and that is now correct — it
 mirrors the packaged app. Reopen from the Dock, or ⌘Q to quit properly, which ends the dev
 session too.
+
+---
+
+## 30 · A folder grant is a bigger promise than a file grant
+
+**Feature:** image viewer folder browsing · **Verdict:** SDK 1.5 → 1.6, additive — with a real
+security decision inside it
+
+Browsing a folder needs `pickDirectory()` and `readDir()`. Adding the methods is routine; what
+they *mean* is not.
+
+Change log entry 2 established that `readFile` serves only paths the user granted through
+`pickFile` this session — that is what makes `fs:read:user-selected` more than a comment.
+Picking a **folder** necessarily widens that: every file inside becomes readable, or a folder
+browser cannot exist. That is a deliberate and much larger promise, so the enforcement has to
+be correspondingly careful.
+
+**Every path is symlink-resolved before it is checked.** Without that the guard is decorative:
+a symlink inside a granted folder pointing at `~/.ssh/id_rsa` has a path string sitting neatly
+under the granted prefix while the actual file does not. Both grant sets store `realpath()`
+output, and every read resolves first.
+
+Verified against a folder containing a planted `escape.png → /etc/passwd`:
+
+| attempt | result |
+|---|---|
+| list the granted folder | 10 entries; `.hidden.png` excluded |
+| list `/etc` | denied — not inside anything granted |
+| read a file in the folder | ok |
+| read `/etc/passwd` directly | denied |
+| **read the symlink inside the granted folder** | **denied** — resolves outside the grant |
+| `…/pics/../../../../etc/passwd` | denied |
+| read a file in a subfolder | ok — inside the grant |
+
+`readDir` is one level only. Recursion is the plugin's decision, not the host's — a host that
+walks a tree on the plugin's behalf has decided how deep is reasonable for every future plugin.
+
+**Thumbnails needed two limits.** A 500-photo folder would otherwise fire 500 simultaneous IPC
+round trips on mount, each returning a full-resolution buffer across the bridge. Tiles decode
+only when an `IntersectionObserver` says they are near the viewport, and a four-slot queue caps
+concurrency. Neither is premature: the naive version is unusable on any real photo directory.
+
+**Contract impact:** additive — `pickDirectory`, `readDir`, `DirEntry`. `pickFile` is unchanged
+and still works, so nothing that used it needed touching.
