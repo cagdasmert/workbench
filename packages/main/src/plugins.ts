@@ -1,6 +1,6 @@
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { PluginManifest } from '@workbench/plugin-sdk';
+import type { CommandArgSchema, PluginManifest } from '@workbench/plugin-sdk';
 
 /** id → absolute plugin directory. Populated by scanPlugins, read by the protocol handler. */
 export const pluginRoots = new Map<string, string>();
@@ -78,10 +78,19 @@ export function validateManifest(raw: unknown, where: string): PluginManifest {
     };
   });
 
-  const commands = entries(c['commands'], 'commands', where, (cmd, at) => ({
-    id: requireString(cmd, 'id', at),
-    title: requireString(cmd, 'title', at),
-  }));
+  const commands = entries(c['commands'], 'commands', where, (cmd, at) => {
+    const args = cmd['args'];
+    if (args !== undefined) {
+      const a = requireObject(args, 'args', at);
+      if (a['type'] !== 'object') throw new Error(`${at}: args.type must be "object"`);
+      requireObject(a['properties'], 'args.properties', at);
+    }
+    return {
+      id: requireString(cmd, 'id', at),
+      title: requireString(cmd, 'title', at),
+      ...(args === undefined ? {} : { args: args as CommandArgSchema }),
+    };
+  });
 
   const accepts = c['accepts'] === undefined
     ? undefined : stringArray(c['accepts'], 'accepts', where);

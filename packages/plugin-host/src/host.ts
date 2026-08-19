@@ -1,4 +1,5 @@
 import type {
+  CommandArgSchema,
   CommandHandler,
   Disposable,
   Logger,
@@ -11,6 +12,18 @@ import type {
 import { getBridge, type WorkbenchHostBridge } from './bridge.js';
 
 export type PluginState = 'discovered' | 'activating' | 'active' | 'failed' | 'disposed';
+
+/** Owner id for commands contributed by the shell itself. */
+export const SHELL_ID = '$shell';
+
+export interface CommandDescriptor {
+  id: string;
+  title: string;
+  /** Human-readable owner, for the palette's right-hand column. */
+  source: string;
+  pluginId: string;
+  args?: CommandArgSchema;
+}
 
 export interface PluginRecord {
   manifest: PluginManifest;
@@ -51,7 +64,8 @@ export class PluginHost {
   readonly registry = new Map<string, PluginRecord>();
 
   private readonly panels = new Map<string, { pluginId: string; definition: PanelDefinition }>();
-  private readonly commands = new Map<string, { pluginId: string; handler: CommandHandler }>();
+  private readonly commands =
+    new Map<string, { pluginId: string; handler: CommandHandler; title?: string }>();
   private readonly panelListeners = new Set<(panelId: string | undefined) => void>();
   private readonly reloadListeners = new Set<(pluginId: string) => void>();
 
@@ -195,11 +209,71 @@ export class PluginHost {
 
   // ── commands ─────────────────────────────────────────────────────
 
+  /**
+   * Every command the app knows about, whether or not its plugin has activated.
+   *
+   * The palette has to list commands from inactive plugins — that is the entire
+   * point of lazy activation (D4), and it is why argument schemas live in the
+   * manifest rather than being passed to `registerCommand`: a schema that only
+   * exists after activation is a schema the palette can never show.
+   *
+   * Shell commands registered through `registerShellCommand` are included, so
+   * "every action is a command" holds with no exceptions (architecture §6).
+   */
+  listCommands(): CommandDescriptor[] {
+    const out: CommandDescriptor[] = [];
+    const seen = new Set<string>();
+
+    for (const rec of this.registry.values()) {
+      for (const cmd of rec.manifest.contributes.commands ?? []) {
+        seen.add(cmd.id);
+        out.push({
+          id: cmd.id,
+          title: cmd.title,
+          source: rec.manifest.name,
+          pluginId: rec.manifest.id,
+          ...(cmd.args === undefined ? {} : { args: cmd.args }),
+        });
+      }
+    }
+
+    // Registered but undeclared — shell commands, and any plugin that registers
+    // a command it never put in its manifest.
+    for (const [id, entry] of this.commands) {
+      if (seen.has(id)) continue;
+      out.push({
+        id,
+        title: entry.title ?? id,
+        source: entry.pluginId === SHELL_ID ? 'Shell' : entry.pluginId,
+        pluginId: entry.pluginId,
+      });
+    }
+
+    return out.sort((a, b) => a.title.localeCompare(b.title));
+  }
+
+  /** Shell-owned commands. Same registry, same palette, no special path. */
+  registerShellCommand(id: string, title: string, handler: CommandHandler): Disposable {
+    this.commands.set(id, { pluginId: SHELL_ID, handler, title });
+    return {
+      dispose: () => {
+        if (this.commands.get(id)?.handler === handler) this.commands.delete(id);
+      },
+    };
+  }
+
   /** Lazy activation: activate whichever plugin declares `onCommand:<id>` first. */
   async invokeCommand(commandId: string, ...args: unknown[]): Promise<void> {
     if (!this.commands.has(commandId)) {
+      // Explicit activation event first, then the implicit one: a plugin that
+      // *declares* a command in contributes.commands has, by declaring it, said
+      // the command should work. Requiring a matching onCommand: entry as well
+      // means the palette lists commands that silently do nothing — the failure
+      // is invisible because the palette closes either way.
       const owner = [...this.registry.values()].find((rec) =>
-        rec.manifest.activationEvents.includes(`onCommand:${commandId}`));
+        rec.manifest.activationEvents.includes(`onCommand:${commandId}`))
+        ?? [...this.registry.values()].find((rec) =>
+          (rec.manifest.contributes.commands ?? []).some((c) => c.id === commandId));
       if (owner !== undefined) await this.activate(owner.manifest.id);
     }
 
@@ -227,6 +301,10 @@ export class PluginHost {
       definition: entry.definition,
       ctx: { panelId, plugin: this.createContext(rec) },
     };
+  }
+
+  async closeActivePanel(): Promise<void> {
+    this.setActivePanel(undefined);
   }
 
   getActivePanelId(): string | undefined {

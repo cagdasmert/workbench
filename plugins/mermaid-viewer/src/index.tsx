@@ -16,6 +16,12 @@ const SAMPLE = `graph TD
   A -->|registerPanel| P[mount el, ctx]
   P -->|returns| T[teardown]`;
 
+const themeRequests = {
+  listeners: new Set<() => void>(),
+  emit() { for (const l of this.listeners) l(); },
+  on(l: () => void) { this.listeners.add(l); return () => { this.listeners.delete(l); }; },
+};
+
 /** mermaid.render needs a unique id per call or it reuses cached DOM. */
 let renderSeq = 0;
 
@@ -23,6 +29,9 @@ function MermaidPanel() {
   const [source, setSource] = useState(SAMPLE);
   const [svg, setSvg] = useState('');
   const [error, setError] = useState<string | null>(null);
+
+  const [themeTick, setThemeTick] = useState(0);
+  useEffect(() => themeRequests.on(() => setThemeTick((t) => t + 1)), []);
 
   useEffect(() => {
     let cancelled = false;
@@ -46,7 +55,7 @@ function MermaidPanel() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [source]);
+  }, [source, themeTick]);
 
   return (
     <div style={styles.root}>
@@ -129,6 +138,13 @@ export const plugin: Plugin = {
     ctx.log.info('mermaid-viewer activating');
     ctx.registerPanel('mermaid.main', definePanel(MermaidPanel));
     ctx.registerCommand('mermaid.open', () => ctx.workspace.openPanel('mermaid.main'));
+
+    ctx.registerCommand('mermaid.theme', async (...args: unknown[]) => {
+      const theme = typeof args[0] === 'string' ? args[0] : 'default';
+      mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: theme as 'default' });
+      themeRequests.emit();
+      await ctx.workspace.openPanel('mermaid.main');
+    });
   },
 
   deactivate() {

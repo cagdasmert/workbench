@@ -5,6 +5,16 @@ import { TreeNode, countNodes, topLevelPaths, type Json } from './tree.js';
 
 const STORAGE_KEY = 'session';
 
+/** Tiny in-plugin event bus so a command can reach the mounted panel. */
+const formatRequests = {
+  listeners: new Set<(indent: number) => void>(),
+  emit(indent: number) { for (const l of this.listeners) l(indent); },
+  on(l: (indent: number) => void) {
+    this.listeners.add(l);
+    return () => { this.listeners.delete(l); };
+  },
+};
+
 const SAMPLE = JSON.stringify(
   {
     plugin: 'json-tools',
@@ -66,6 +76,16 @@ function JsonPanel({ ctx }: { ctx: PanelContext }) {
       if (saveTimer.current !== null) clearTimeout(saveTimer.current);
     };
   }, [ctx, text, expanded, restored]);
+
+  useEffect(() => formatRequests.on((indent) => {
+    setText((current) => {
+      try {
+        return JSON.stringify(JSON.parse(current) as Json, null, indent);
+      } catch {
+        return current;      // invalid JSON: leave it alone
+      }
+    });
+  }), []);
 
   const parsed = useMemo<{ value: Json } | { error: string }>(() => {
     try {
@@ -180,6 +200,14 @@ export const plugin: Plugin = {
     ctx.log.info('json-tools activating');
     ctx.registerPanel('json.main', definePanel(JsonPanel));
     ctx.registerCommand('json.open', () => ctx.workspace.openPanel('json.main'));
+
+    // Declared with a JSON-schema signature in plugin.json — the palette reads
+    // that from the manifest without this plugin having to be active.
+    ctx.registerCommand('json.format', async (...args: unknown[]) => {
+      const indent = typeof args[0] === 'number' ? args[0] : 2;
+      formatRequests.emit(indent);
+      await ctx.workspace.openPanel('json.main');
+    });
   },
 
   deactivate() {

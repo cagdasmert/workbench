@@ -251,6 +251,47 @@ describe('contributions', () => {
     expect(roundTripped).toEqual({ text: '{"a":1}', expanded: ['$'] });
   });
 
+  it('activates for a declared command with no matching activation event', async () => {
+    let ran = 0;
+    const plugin: Plugin = {
+      activate(ctx) {
+        ctx.registerCommand('test.declared', () => { ran += 1; });
+      },
+    };
+    // activationEvents lists only test.open; the command lives in contributes
+    const host = hostFor(plugin, manifest({
+      activationEvents: ['onCommand:test.open'],
+      contributes: { commands: [{ id: 'test.declared', title: 'Declared' }] },
+    }));
+
+    await host.invokeCommand('test.declared');
+
+    expect(host.get(PLUGIN_ID)?.state).toBe('active');
+    expect(ran).toBe(1);
+  });
+
+  it('lists commands from plugins that have never activated', async () => {
+    const host = hostFor(noop, manifest({
+      contributes: {
+        commands: [
+          { id: 'test.open', title: 'Open Test' },
+          {
+            id: 'test.args', title: 'With Args',
+            args: { type: 'object', properties: { n: { type: 'number' } }, required: ['n'] },
+          },
+        ],
+      },
+    }));
+
+    expect(host.get(PLUGIN_ID)?.state).toBe('discovered');
+
+    const listed = host.listCommands();
+    expect(listed.map((c) => c.id).sort()).toEqual(['test.args', 'test.open']);
+    expect(listed.find((c) => c.id === 'test.args')?.args?.required).toEqual(['n']);
+    // still not activated — listing must not have side effects
+    expect(host.get(PLUGIN_ID)?.state).toBe('discovered');
+  });
+
   it('marks a plugin failed when the module exports no activate()', async () => {
     const host = createPluginHost({ bridge, importModule: async () => ({}) });
     host.load([manifest()]);

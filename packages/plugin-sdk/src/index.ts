@@ -50,7 +50,17 @@ export interface PluginManifest {
   contributes: {
     panels?: Array<{ id: string; title: string }>;
     menu?: Array<{ command: string; label: string; group?: string }>;
-    commands?: Array<{ id: string; title: string }>;
+    commands?: Array<{
+      id: string;
+      title: string;
+      /**
+       * JSON-schema argument signature. Optional, but fill it in from a
+       * command's first commit: a mature command registry is mechanically an
+       * agent tool manifest, and retrofitting schemas onto sixty commands later
+       * is the tedium that kills that idea (see `ai-layer-options.md` §5).
+       */
+      args?: CommandArgSchema;
+    }>;
     /** Declared from day one, routed at M2. Parsed and ignored until then —
      *  so plugin.json files written during M1 never need revising. */
     accepts?: string[];
@@ -109,6 +119,22 @@ export interface PluginContext {
   };
 
   log: Logger;
+}
+
+/**
+ * A deliberately small subset of JSON Schema — enough to describe a command's
+ * arguments, prompt for them in the palette, and hand them to a model later.
+ * It is not a validator; the shell checks `required` and `type` and no more.
+ */
+export interface CommandArgSchema {
+  type: 'object';
+  properties: Record<string, {
+    type: 'string' | 'number' | 'boolean';
+    description?: string;
+    enum?: string[];
+    default?: string | number | boolean;
+  }>;
+  required?: string[];
 }
 
 /** Anything that survives a JSON round trip, and nothing that doesn't. */

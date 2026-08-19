@@ -1,7 +1,11 @@
-# M1 — Shell Change Log
+# M1 / M2 — Shell & Contract Change Log
 
 Every time building a viewer makes me *want* to reach into the shell or main process, it goes
 here: what I wanted, why, and what happened.
+
+**M2 note:** shell changes are now *expected* — the command palette is shell work by
+definition. The bar moves to the **SDK**: since `plugin-sdk@1.0`, any change to
+`packages/plugin-sdk/src/index.ts` is a contract event and gets an entry, additive or not.
 
 **A shell change made to accommodate a viewer is a contract defect.** An empty log at the end
 of M1 is what earns the `plugin-sdk@1.0` freeze (decision D8). A non-empty one is the most
@@ -225,3 +229,55 @@ It was invisible until something consumed the API.
   decision-log entry, not by loosening this one.
 - `fs.writeFile`, `fs.watch`, and `storage.delete` do not exist. Adding methods post-1.0 is a
   minor bump, so waiting for a caller costs nothing.
+
+---
+
+# M2
+
+## 7 · Command argument schemas go in the manifest, not `registerCommand`
+
+**Feature:** command palette · **Verdict:** SDK 1.0 → 1.1, additive
+
+`ai-layer-options.md` §5 asks for a JSON-schema argument signature on every command from its
+first commit, because a mature command registry is mechanically an agent tool manifest and
+retrofitting schemas onto sixty commands is what kills that idea.
+
+The obvious place is a third parameter on `registerCommand`. **That would not work.**
+`registerCommand` only runs *after* a plugin activates, and the palette's whole job is to list
+commands from plugins that have not activated — that is lazy activation (D4). A schema that
+only exists post-activation is a schema the palette can never show.
+
+So it goes in `contributes.commands[].args`, read from the manifest without executing plugin
+code (§4.1). Verified: with all four plugins in state `discovered`, the palette listed all
+eight commands and correctly flagged the two carrying schemas.
+
+**Contract impact:** additive — a new optional field and a new exported `CommandArgSchema`
+type. Existing manifests and plugins compile untouched. First minor bump of the frozen SDK.
+
+---
+
+## 8 · Declared commands that could never run
+
+**Feature:** command palette · **Verdict:** CONTRACT GAP — host fixed
+
+**What happened.** The palette listed `json.format`, Enter ran it, the palette closed — and
+nothing happened. `json-tools` stayed `discovered`.
+
+`invokeCommand` activated a plugin only when its manifest listed `onCommand:<id>` in
+`activationEvents`. `json.format` was declared in `contributes.commands` but had no matching
+activation event, so no plugin was ever activated, no handler was found, and the command
+silently did nothing.
+
+This was harmless while commands were only reachable from the menu — every menu entry happened
+to have an activation event. The palette exposes **every declared command**, so it turned a
+latent inconsistency into dead UI.
+
+**Worse, it fails invisibly.** The palette closes whether or not the command ran, so a dead
+entry looks exactly like a slow one.
+
+**Fix.** `invokeCommand` now falls back from the explicit `onCommand:` event to any plugin that
+*declares* the command in `contributes.commands`. Declaring a command is a statement that it
+should work; requiring a second, redundant declaration to make it actually work is a footgun
+with no upside. Two tests cover it.
+
+**Contract impact:** none — host behaviour only. Manifests get *more* permissive, never less.

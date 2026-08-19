@@ -1,6 +1,7 @@
-export { PluginHost, createPluginHost } from './host.js';
+export { PluginHost, createPluginHost, SHELL_ID } from './host.js';
 export type {
   ActivePanel,
+  CommandDescriptor,
   ImportModule,
   PluginHostOptions,
   PluginRecord,
