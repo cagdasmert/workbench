@@ -5,8 +5,8 @@
 **Assumes:** macOS, Node 20+, no prior Electron experience
 **Decisions applied:** `mount(el, ctx)` panel API returning a teardown, with a React helper ([[architecture#11-decision-log|D8]]) · SDK freezes at M1, not M0 (D8) · name `Workbench` · npm workspaces
 **Revised:** 2026-08-19 — corrected the `plugin://` CORS/MIME handling, split the dev-mode CSP, moved plugin builds out of the main process, and made `scripts/dev.mjs` its own step
-**Revised a third time:** after M4 shipped — §6.5 gained the `editMenu` role and a context menu. Their absence disabled every editing shortcut app-wide and went unnoticed for four milestones.
 **Revised again:** 2026-08-19, *after building M0 end to end* — chokidar's dropped glob support, the panel container lifetime bug behind `NotFoundError: removeChild`, `connect-src`, and three gates that could not pass as written. Every code block below has now been run.
+**Revised a third time:** after M4 shipped — §6.5 gained the `editMenu` role and a context menu. Their absence disabled every editing shortcut app-wide and went unnoticed for four milestones.
 
 ---
 
