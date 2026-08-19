@@ -1,5 +1,6 @@
 import { app, BrowserWindow, ipcMain, session } from 'electron';
 
+import type { PluginManifest } from '@workbench/plugin-sdk';
 import { scanPlugins } from './plugins.js';
 import { pluginSearchPaths, shellDist, preloadScript } from './paths.js';
 import { registerPluginScheme, handlePluginProtocol } from './protocol.js';
@@ -84,6 +85,34 @@ function createWindow(): BrowserWindow {
   return win;
 }
 
+/**
+ * macOS keeps an app running with every window closed, so the window is not a
+ * constant — it is replaced each time the user reopens one from the Dock.
+ * Anything registered once for the life of the process looks it up through
+ * `getWindow()` instead of capturing it.
+ */
+let mainWindow: BrowserWindow | null = null;
+const getWindow = (): BrowserWindow | null =>
+  mainWindow !== null && !mainWindow.isDestroyed() ? mainWindow : null;
+
+/** Wiring that belongs to one window and must be redone for its replacement. */
+function attachWindow(win: BrowserWindow, manifests: PluginManifest[]): void {
+  mainWindow = win;
+  installContextMenu(win);
+  trackWindow(win);
+  buildMenu(manifests, win);
+
+  if (DEV) {
+    // Dev only: the orchestrator builds, main just notices the output changed.
+    const stopWatching = watchPluginBuilds(win);
+    win.on('closed', () => void stopWatching());
+  }
+
+  win.on('closed', () => {
+    if (mainWindow === win) mainWindow = null;
+  });
+}
+
 app.whenReady().then(async () => {
   installCsp();
   handlePluginProtocol();
@@ -114,31 +143,37 @@ app.whenReady().then(async () => {
     console.log(`[notify:${lvl}]`, typeof message === 'string' ? message : String(message));
   });
 
-  const win = createWindow();
-  registerFsBroker(win);
-  installContextMenu(win);
-  registerPluginStateBroker(win, () => buildMenu(manifests, win));
+  // Registered once for the life of the process — ipcMain.handle throws on a
+  // second registration for the same channel, so none of this may be redone
+  // when a window is reopened.
+  registerFsBroker(getWindow);
+  registerPluginStateBroker(getWindow, () => {
+    const win = getWindow();
+    if (win !== null) buildMenu(manifests, win);
+  });
   registerStorageBroker();
   registerNetBroker();
   registerSessionBroker();
-  registerKeybindingsBroker(() => {
-    if (!win.isDestroyed()) win.webContents.send('keys:changed');
-  });
-  registerSettingsBroker((pluginId, key, value) => {
-    if (!win.isDestroyed()) win.webContents.send('settings:changed', pluginId, key, value);
-  });
-  buildMenu(manifests, win);
+  registerKeybindingsBroker(() => getWindow()?.webContents.send('keys:changed'));
+  registerSettingsBroker((pluginId, key, value) =>
+    getWindow()?.webContents.send('settings:changed', pluginId, key, value));
 
-  // Dev only: the orchestrator builds, main just notices the output changed.
-  if (DEV) {
-    const stopWatching = watchPluginBuilds(win);
-    win.on('closed', () => void stopWatching());
-  }
+  attachWindow(createWindow(), manifests);
+
+  // Without this the app is stranded: window-all-closed deliberately does not
+  // quit on macOS, so with no `activate` handler there is no window and no way
+  // to get one back short of force-quitting.
+  app.on('activate', () => {
+    if (getWindow() === null) attachWindow(createWindow(), manifests);
+  });
 }).catch((err: unknown) => {
   console.error('[main] startup failed', err);
   app.quit();
 });
 
 app.on('window-all-closed', () => {
+  // macOS convention: closing the last window does not quit. The `activate`
+  // handler above is the other half of that bargain — one without the other
+  // leaves a running app the user cannot reach.
   if (process.platform !== 'darwin') app.quit();
 });

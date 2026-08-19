@@ -47,7 +47,7 @@ export function disabledIds(): string[] {
 }
 
 export function registerPluginStateBroker(
-  win: BrowserWindow,
+  getWindow: () => BrowserWindow | null,
   onChanged: () => void,
 ): void {
   ipcMain.handle('plugins:disabled', () => [...disabled]);
@@ -61,6 +61,7 @@ export function registerPluginStateBroker(
 
     await persist();
     onChanged();                      // rebuild the native menu
-    if (!win.isDestroyed()) win.webContents.send('plugins:enabledChanged', rawId, rawEnabled);
+    const win = getWindow();
+    if (win !== null) win.webContents.send('plugins:enabledChanged', rawId, rawEnabled);
   });
 }

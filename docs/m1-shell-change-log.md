@@ -888,3 +888,43 @@ which is why it is worth writing down.
 The user's own diagram could not be reproduced from the screenshot (the source was scrolled
 past its first lines) and a faithful reconstruction rendered fine. That is precisely why bug 2
 mattered: the app knew what was wrong and had no way to say so.
+
+---
+
+## 29 · Half a macOS convention leaves the app unreachable
+
+**Feature:** window lifecycle · **Verdict:** shell defect, present since M0
+
+Closing the window left the app running with no way to get it back: the Dock icon did nothing,
+and `npm run dev` kept waiting on an Electron process that would never exit.
+
+The user asked whether this was macOS behaviour or a bug. **Both.**
+`window-all-closed` not quitting on darwin is correct and deliberate — it is in the M0 guide,
+and it is what every native macOS app does. But that convention is a pair:
+
+| handler | meaning |
+|---|---|
+| `window-all-closed` → don't quit on darwin | the app outlives its windows |
+| `activate` → recreate if none | ...and clicking the Dock icon brings one back |
+
+Only the first was implemented. The result is strictly worse than either choice made
+consistently: an app that survives its window and cannot be reached, short of force-quitting.
+
+**The reason it was not a one-line fix.** Five things were bound to the single window created
+at startup, and three of them register `ipcMain.handle(...)`, which **throws** on a second
+registration for the same channel. Naively calling `createWindow()` again would have crashed
+on `Attempted to register a second handler for 'fs:pickFile'`.
+
+So the split is now explicit:
+
+- **once per process** — every `ipcMain.handle`, reaching the current window through a
+  `getWindow()` accessor rather than capturing one
+- **per window** — the context menu, bounds tracking, the dev file watcher, the native menu
+
+Verified across a full cycle: window closes → 0 windows, app alive → `activate` → 1 window,
+5 plugins listed over IPC through the *new* window, menu intact, no exceptions. Session restore
+reopened the JSON panel as a bonus, which is the same code path a fresh launch uses.
+
+**On `npm run dev`:** it keeps running after you close the window, and that is now correct — it
+mirrors the packaged app. Reopen from the Dock, or ⌘Q to quit properly, which ends the dev
+session too.

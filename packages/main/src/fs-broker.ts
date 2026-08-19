@@ -28,13 +28,22 @@ function sanitizeFilters(raw: unknown): FileFilter[] | undefined {
   return out.length > 0 ? out : undefined;
 }
 
-export function registerFsBroker(win: BrowserWindow): void {
+/**
+ * Takes a getter rather than a window: `ipcMain.handle` can only be registered
+ * once per channel, but the window it talks to is replaced whenever the user
+ * closes and reopens it (macOS keeps the app alive with no window).
+ */
+export function registerFsBroker(getWindow: () => BrowserWindow | null): void {
   ipcMain.handle('fs:pickFile', async (_event, rawFilters: unknown) => {
     const filters = sanitizeFilters(rawFilters);
-    const result = await dialog.showOpenDialog(win, {
-      properties: ['openFile'],
+    const options = {
+      properties: ['openFile' as const],
       ...(filters === undefined ? {} : { filters }),
-    });
+    };
+    const win = getWindow();
+    const result = win === null
+      ? await dialog.showOpenDialog(options)
+      : await dialog.showOpenDialog(win, options);
 
     const picked = result.canceled ? undefined : result.filePaths[0];
     if (picked === undefined) return undefined;
