@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 import { scanPlugins } from './plugins.js';
 import { registerPluginScheme, handlePluginProtocol } from './protocol.js';
+import { registerAppScheme, handleAppProtocol, APP_ORIGIN } from './app-protocol.js';
 import { buildMenu } from './menu.js';
 import { watchPluginBuilds } from './watcher.js';
 import { registerFsBroker } from './fs-broker.js';
@@ -17,9 +18,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const DEV = process.env['VITE_DEV_SERVER_URL'] !== undefined;
 const PLUGIN_DEV_DIR = path.join(__dirname, '../../../plugins');
+const SHELL_DIST = path.join(__dirname, '../../shell/dist');
 
 // Must happen before app.whenReady().
 registerPluginScheme();
+registerAppScheme();
 
 /**
  * The CSP differs between dev and prod: Vite's React Fast Refresh injects inline
@@ -27,6 +30,11 @@ registerPluginScheme();
  * `plugin:` must appear in both, or the dynamic import of plugin code is blocked.
  */
 function installCsp(): void {
+  // Dev only. In production the shell is served over `app://` and carries its
+  // policy on the response itself — a file:// origin cannot carry one at all,
+  // which is why this never protected a packaged build. See app-protocol.ts.
+  if (!DEV) return;
+
   // `plugin:` appears in script-src so plugin modules can be imported, and in
   // connect-src so a plugin can fetch its own bundled assets. Omitting either is
   // a silent block, not an error.
@@ -66,7 +74,8 @@ function createWindow(): BrowserWindow {
     void win.loadURL(devServerUrl);
     win.webContents.openDevTools({ mode: 'detach' });
   } else {
-    void win.loadFile(path.join(__dirname, '../../shell/dist/index.html'));
+    // Not loadFile(): a file:// origin cannot carry a CSP.
+    void win.loadURL(`${APP_ORIGIN}/index.html`);
   }
   return win;
 }
@@ -74,6 +83,7 @@ function createWindow(): BrowserWindow {
 app.whenReady().then(async () => {
   installCsp();
   handlePluginProtocol();
+  handleAppProtocol(SHELL_DIST);
 
   await loadPluginState();
   await loadKeybindings();

@@ -626,3 +626,46 @@ panel.
 This was not in any milestone. It earned its place because the log made the pattern visible —
 three separate entries pointing at the same missing artifact is an argument that no single
 plugin could have made.
+
+---
+
+# M4
+
+## 21 · The production CSP had never once applied
+
+**Feature:** `app://` scheme · **Verdict:** CONTRACT GAP — the oldest one in the project
+
+Since M0 step 10 the shell has set a strict production CSP through
+`session.webRequest.onHeadersReceived`, and it has **never had any effect**. A packaged build
+loads via `loadFile()`, which gives the renderer a `file://` origin, and `file://` emits no
+header events — so the handler simply never ran. Dev was protected because the dev server
+speaks HTTP. Production was not protected at all.
+
+This was recorded as a known gap in M0 and carried forward through three milestones, which is
+the right call — it costs nothing until you ship — but M4 is the milestone where "we will fix
+it at packaging" comes due.
+
+**Fix.** The shell is served over a custom `app://` scheme, exactly as plugins are served over
+`plugin://`, and the policy is set **on the response** rather than through `webRequest`. That
+removes the failure mode entirely: a scheme that emits no header events cannot silently skip a
+policy that is part of the response it returns.
+
+Verified in a real production run — no dev server, no `VITE_DEV_SERVER_URL`:
+
+| check | result |
+|---|---|
+| origin | `app://shell` — a real origin, not `file://` |
+| policy present | full CSP on the document response |
+| plugin code still loads | `mermaid-viewer` active, SVG rendered |
+| **policy actually blocks** | `fetch('https://example.com')` → *"Refused to connect because it violates the document's Content Security Policy"* |
+| traversal guard | `app://shell/%2e%2e%2f…/etc/passwd` → 403 |
+
+The fourth row is the one that matters. A CSP that is present but permissive is
+indistinguishable from one that is absent until something tries to escape; asserting a *block*
+is the only way to know it is live.
+
+`object-src 'none'`, `base-uri 'none'` and `frame-ancestors 'none'` were added while writing a
+policy that would finally be enforced — cheap, and awkward to add once something depends on the
+looser version.
+
+**Contract impact:** none. No SDK change, no manifest change, no plugin change.

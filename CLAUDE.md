@@ -6,42 +6,34 @@ plugins. Electron + TypeScript + React, npm workspaces.
 **The plugin contract is the product. The features are disposable.** Optimise every decision
 for the contract staying stable, not for shipping a viewer faster.
 
-## Current milestone: M3
+## Current milestone: M4 — the last one
 
-M0, M1 and M2 are **done**. `@workbench/plugin-sdk` is frozen at `1.x` — tagged at `1.0`, now
-`1.3` after three additive bumps (`CommandArgSchema`, `bus`/`Content`, `net`). No line of the
-panel API, lifecycle, `Disposable`, or manifest schema has changed since the freeze.
+M0–M3 are **done**, plus `tools/create-plugin`. Six plugins, 29 tests. The SDK was frozen at
+`1.0` after M1 and is now `1.5` through five additive bumps — no line of the panel API,
+lifecycle, `Disposable`, or the core manifest shape has changed since the freeze.
 
-**The contract is frozen. Treat `packages/plugin-sdk/src/index.ts` as closed.** Additive is a
-minor bump and needs a caller that already exists. Changing or removing anything is a **major
-bump plus a migration note in the decision log**.
+**The contract is frozen. Treat `packages/plugin-sdk/src/index.ts` as closed.**
 
-M3 delivers the three things that make the app usable by someone who did not write it:
+M4 makes it a real application rather than a dev-server experiment:
 
-1. **Settings UI generated from each plugin's JSON Schema.** Plugins declare
-   `contributes.settings` and read `ctx.settings`; they never build a form. `ai-provider`
-   already declares `backend` and `model` and is the first consumer.
-2. **Keybinding registry** with user overrides stored *separately* from defaults, so updating a
-   plugin never clobbers a rebind.
-3. **Plugin manager** — enable/disable/reload, and `failed` plugins visible with their stack
-   traces. The M0 error card already promises a **Reload plugin** button; this is where it gets
-   one.
+1. **`app://` scheme for the shell.** In production the shell loads over `file://`, and
+   `onHeadersReceived` never fires for `file://` — so **the strict CSP has never actually
+   applied to a packaged build**. Serving the shell over a custom scheme is what makes
+   architecture §9 true rather than aspirational. Do this first: everything else is packaged on
+   top of it.
+2. **Session restore.** Reopen the last panel and its plugin on launch.
+3. **Packaging.** `.app` bundle, ad-hoc signed (`codesign -s -`), launches from
+   `/Applications`. `electron-builder` gets installed here — it was deliberately left out of M0.
 
-Keep appending to `docs/m1-shell-change-log.md`. Shell work is expected in M3; an **SDK**
-change is still a contract event and gets an entry.
+Keep appending to `docs/m1-shell-change-log.md`.
 
-**Do not build in M3:** packaging · session restore · tabs or splits. Those are M4.
+### Watch for
 
-### Known gaps carried forward
-
-- **The production CSP is not enforced** — `onHeadersReceived` never fires for `file://`, so
-  the strict policy protects dev but not a packaged build. Fix is an `app://` scheme (M4).
-- **Menus are built once at startup** — editing a manifest label needs a restart. M3's plugin
-  manager is the natural place to fix this.
-- **`storage` is scoped, not isolated** — the preload bridge takes a `pluginId`, so under the
-  in-process model any plugin can read another's data directly.
-- **The async-restore trap has now bitten twice** (change log entries 6 and 13). It belongs in
-  a `tools/create-plugin` template, which does not exist yet.
+- **Plugins are loaded from a dev path.** `PLUGIN_DEV_DIR` resolves relative to the source
+  tree; a packaged app has to read from `~/Library/Application Support/Workbench/plugins/` and
+  fall back to bundled ones. Getting this wrong means a `.app` that opens with no plugins.
+- **The preload path** is resolved relative to `__dirname` and must survive `asar` packing.
+- **`storage` is scoped, not isolated** — unchanged, and now shipping.
 
 ## Invariants — never violate without asking
 
