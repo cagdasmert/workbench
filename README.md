@@ -3,7 +3,7 @@
 A single local macOS app that hosts a growing set of small utilities — mermaid viewer, image
 viewer, JSON tools — behind one window and one set of keybindings.
 
-**Status:** M0 complete · Electron + TypeScript + React · macOS only · personal project
+**Status:** M1 complete · plugin SDK frozen at `1.0` · Electron + TypeScript + React · macOS only
 
 ---
 
@@ -27,7 +27,8 @@ npm install
 npm run dev
 ```
 
-A window opens. **Plugins → Hello Panel** mounts the example plugin. Edit
+A window opens. The **Plugins** menu carries an entry per plugin — try **Mermaid Viewer**,
+**Image Viewer**, or **JSON Tools**. Edit
 `plugins/hello/src/index.tsx` and save — the panel swaps in place in ~250 ms, with no app
 restart and exactly one activate/deactivate pair per save.
 
@@ -87,6 +88,9 @@ packages/
   shell/          React UI: chrome, panel mounting, command routing
 plugins/
   hello/          M0 contract test
+  mermaid-viewer/ live diagram preview — panel contract only
+  image-viewer/   ctx.fs: pickFile + readFile over the broker
+  json-tools/     ctx.storage: tree view with persistent state
 scripts/          dev orchestrator + esbuild configs
 ```
 

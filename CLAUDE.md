@@ -6,34 +6,44 @@ plugins. Electron + TypeScript + React, npm workspaces.
 **The plugin contract is the product. The features are disposable.** Optimise every decision
 for the contract staying stable, not for shipping a viewer faster.
 
-## Current milestone: M1
+## Current milestone: M2
 
-M0 is **done** and tagged `plugin-sdk@0.1` — shell, `hello` plugin, hot reload, all 11
-verification checks in `docs/m0-build-guide.md` §13 passing.
+M0 and M1 are **done**. `@workbench/plugin-sdk` is **frozen at `1.0`** and tagged — earned by
+building mermaid, image, and JSON viewers with `packages/shell` unchanged (decisions D8, D9).
 
-M1 builds three viewers against the SDK, in this order, because each stresses a different
-part of the contract:
+**The contract is now frozen. Treat `packages/plugin-sdk/src/index.ts` as closed.** Adding a
+method is a minor bump and needs a caller that exists. Changing or removing anything is a
+**major bump plus a migration note in the architecture decision log** — not a drive-by edit.
+This is the discipline the whole project has been building toward; it only means something if
+it survives contact with M2.
 
-1. **mermaid** — pure render. Proves the panel contract alone. Needs **no new host API**.
-2. **image** — forces `ctx.fs` (`readFile`, `pickFile`) and binary payloads through the
-   permission-declared broker. First real IPC round trip.
-3. **json** — large text, heavy interaction, persistent view state. Forces `ctx.storage`.
+M2 delivers:
 
-**Grow the SDK only when the viewer in front of you needs it.** Adding `storage`/`settings`/
-`fs` up front means guessing at the shape; adding them when a real plugin demands them means
-the plugin proves the shape. Version stays `0.x` throughout.
+1. **Command palette** (`⌘K`) over the existing command registry. **Every command carries a
+   JSON-schema argument signature from its first commit** — retrofitting schemas onto 60
+   commands later is the tedium that kills the agent-tool-manifest idea in `ai-layer-options`
+   §5.
+2. **Typed content bus** as **waterfall middleware** (`(payload, next)`), not a plain router —
+   per the Cordis analysis §3, same code volume and strictly more expressive. Routing table
+   comes from the `accepts`/`emits` already declared in every manifest.
+3. **`ai-provider`** as an ordinary plugin — never a shell service, or the app stops working
+   offline. Thin `AiProvider` against an OpenAI-compatible endpoint pointed at Ollama, then
+   text→mermaid as the routing demo.
 
-### The M1 deliverable is the log, not just the viewers
+Keep `docs/m1-shell-change-log.md` going as an M2 log. The bar is higher now: a shell change
+is expected in M2 (the palette *is* shell work), but an **SDK** change is a contract event.
 
-Every time you *want* to reach into the shell to make a viewer work, record it in
-`docs/m1-shell-change-log.md` — what you wanted, why, and what you did instead.
+**Do not build in M2:** settings UI · keybindings · plugin manager · packaging · session
+restore. Those are M3–M4.
 
-**A shell change made to accommodate a viewer is a contract defect.** Stop, fix the contract,
-and only then start the next viewer. An empty log at the end of M1 is what earns the `1.0`
-freeze (decision D8). A non-empty one is the most valuable output of this milestone.
+### Known gaps carried forward
 
-**Do not build in M1:** command palette · tabs or splits · settings UI · content bus ·
-permission enforcement · packaging · session restore. Those are M2–M4.
+- **The production CSP is not enforced** — `onHeadersReceived` never fires for `file://`, so
+  the strict policy protects dev but not a packaged build. Fix is an `app://` scheme (M4).
+- **Menus are built once at startup** — editing a manifest label needs a restart (M3).
+- **`storage` is scoped, not isolated** — the preload bridge takes a `pluginId`, so under the
+  in-process model any plugin can read another's data directly. Same seam iframe isolation
+  would close.
 
 ## Invariants — never violate without asking
 
