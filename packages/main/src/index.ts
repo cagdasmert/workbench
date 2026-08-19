@@ -6,6 +6,7 @@ import { scanPlugins } from './plugins.js';
 import { registerPluginScheme, handlePluginProtocol } from './protocol.js';
 import { buildMenu } from './menu.js';
 import { watchPluginBuilds } from './watcher.js';
+import { registerFsBroker } from './fs-broker.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -26,10 +27,10 @@ function installCsp(): void {
   // a silent block, not an error.
   const csp = DEV
     ? "default-src 'self'; script-src 'self' 'unsafe-inline' plugin:; " +
-      "style-src 'self' 'unsafe-inline'; img-src 'self' data: plugin:; " +
+      "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: plugin:; " +
       "connect-src 'self' plugin: ws://localhost:5173;"
     : "default-src 'self'; script-src 'self' plugin:; " +
-      "style-src 'self' 'unsafe-inline'; img-src 'self' data: plugin:; " +
+      "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: plugin:; " +
       "connect-src 'self' plugin:;";
 
   session.defaultSession.webRequest.onHeadersReceived((details, cb) => {
@@ -86,6 +87,7 @@ app.whenReady().then(async () => {
   });
 
   const win = createWindow();
+  registerFsBroker(win);
   buildMenu(manifests, win);
 
   // Dev only: the orchestrator builds, main just notices the output changed.

@@ -1,4 +1,4 @@
-import type { PluginManifest } from '@workbench/plugin-sdk';
+import type { FileFilter, PluginManifest } from '@workbench/plugin-sdk';
 
 /**
  * The preload surface. plugin-host speaks to this and nothing else — no Electron
@@ -9,6 +9,8 @@ import type { PluginManifest } from '@workbench/plugin-sdk';
 export interface WorkbenchHostBridge {
   listPlugins(): Promise<PluginManifest[]>;
   notify(message: string, level?: string): Promise<void>;
+  pickFile(filters?: FileFilter[]): Promise<string | undefined>;
+  readFile(path: string): Promise<Uint8Array<ArrayBuffer>>;
   onCommand(cb: (commandId: string) => void): () => void;
   onPluginChanged(cb: (pluginId: string) => void): () => void;
 }

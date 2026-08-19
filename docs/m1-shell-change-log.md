@@ -51,3 +51,72 @@ viewer before treating it as a rule.
 
 **Contract impact:** none. No change to `PluginContext`, the manifest, or the panel API. No
 plugin source changes.
+
+---
+
+## 2 · `ctx.fs` — scoping what `fs:read:user-selected` actually means
+
+**Viewer:** image · **Verdict:** planned growth, but with one decision worth recording
+
+Adding `fs` to the SDK is expected M1 work, not a defect — the image viewer is the reason it
+exists. Two choices inside it are not obvious, though.
+
+**Only `pickFile` and `readFile` shipped.** Architecture §4.3 also lists `writeFile` and
+`watch`. The image viewer needs neither, so neither exists. Guessing at the shape of a method
+nothing calls is how contracts rot before they are used.
+
+**`readFile` serves only paths granted by `pickFile` in the current session.** Decision D5
+says permissions are declared, not enforced — and this is not a general permission engine, so
+it doesn't contradict that. It is narrower and more specific: without it, `fs:readFile` over
+the bridge is an arbitrary-file-read primitive handed to the renderer, which architecture §9
+says must never cross. The dialog *is* the grant. Nothing is persisted; a restart starts from
+zero.
+
+Verified live: `readFile('/etc/passwd')` → `fs:read denied — … was not granted by pickFile in
+this session`, and `readFile(42)` → `fs:readFile expects a path string`.
+
+The cost is real and deliberate: a plugin cannot read a path it merely knows about. A config
+reader or a folder watcher will need a wider scope, which should arrive as a *new* permission
+string and a decision-log entry — not by quietly loosening this one.
+
+**Contract impact:** additive. `PluginContext` gains `fs`; nothing existing changed.
+
+---
+
+## 3 · `readFile` returned a `Uint8Array` too loose to use
+
+**Viewer:** image · **Verdict:** CONTRACT GAP — SDK fixed
+
+**What happened.** `new Blob([bytes])` did not compile. Modern TypeScript types bare
+`Uint8Array` as `Uint8Array<ArrayBufferLike>`, which includes `SharedArrayBuffer`, and `Blob`
+will not accept that. Every plugin touching binary data would have hit it.
+
+The workarounds are all bad: a cast (lying about a type we actually control), or a defensive
+copy of the whole file (wasting a full image's worth of memory on every open).
+
+**Fix.** The SDK now declares `Promise<Uint8Array<ArrayBuffer>>`. That is simply *true* — the
+bytes come from `node:fs` over structured clone and are never shared — and stating it lets
+plugins pass the result straight to `Blob`, `createImageBitmap`, or a `DataView` with no cast
+and no copy.
+
+Exactly the kind of thing M1 is for: the imprecision was invisible until a real plugin
+consumed the API.
+
+**Contract impact:** a narrowing of an as-yet-unreleased method. No plugin source changed.
+
+---
+
+## 4 · CSP blocked `blob:` image sources
+
+**Viewer:** image · **Verdict:** CONTRACT GAP — host fixed
+
+`img-src 'self' data: plugin:` — set during M0 step 10 — has no `blob:`, so the object URL the
+viewer builds from the bytes it just read would have been blocked. Added `blob:` to `img-src`
+in both the dev and production policies.
+
+Second time the CSP has been the thing standing between a plugin and working (after
+`connect-src` in entry 1). The pattern is consistent: **CSP failures are silent**, and they
+present as "my plugin is broken" rather than as a policy error. Worth checking the policy
+first whenever a plugin can load its code but not its content.
+
+**Contract impact:** none.

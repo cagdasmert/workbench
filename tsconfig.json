@@ -21,6 +21,9 @@
     },
     {
       "path": "plugins/mermaid-viewer"
+    },
+    {
+      "path": "plugins/image-viewer"
     }
   ]
 }

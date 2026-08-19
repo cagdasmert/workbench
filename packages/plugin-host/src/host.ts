@@ -287,6 +287,11 @@ export class PluginHost {
         });
       },
 
+      fs: {
+        pickFile: async (filters) => this.bridge.pickFile(filters),
+        readFile: async (filePath) => this.bridge.readFile(filePath),
+      },
+
       workspace: {
         openPanel: async (panelId) => {
           if (!this.panels.has(panelId)) {

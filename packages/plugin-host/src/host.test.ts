@@ -20,6 +20,8 @@ function manifest(overrides: Partial<PluginManifest> = {}): PluginManifest {
 const bridge: WorkbenchHostBridge = {
   listPlugins: async () => [],
   notify: async () => undefined,
+  pickFile: async () => undefined,
+  readFile: async () => new Uint8Array(),
   onCommand: () => () => undefined,
   onPluginChanged: () => () => undefined,
 };
@@ -176,6 +178,43 @@ describe('contributions', () => {
     expect(host.get(PLUGIN_ID)?.state).toBe('active');
     expect(ran).toBe(2);
     expect(host.getPanel('test.main')).toBeDefined();
+  });
+
+  it('proxies ctx.fs straight through to the bridge', async () => {
+    const calls: string[] = [];
+    const fsBridge: WorkbenchHostBridge = {
+      ...bridge,
+      pickFile: async (filters) => {
+        calls.push(`pickFile:${JSON.stringify(filters)}`);
+        return '/tmp/picked.png';
+      },
+      readFile: async (p) => {
+        calls.push(`readFile:${p}`);
+        return new Uint8Array([1, 2, 3]);
+      },
+    };
+
+    let bytes: Uint8Array | undefined;
+    const plugin: Plugin = {
+      async activate(ctx) {
+        const picked = await ctx.fs.pickFile([{ name: 'Images', extensions: ['png'] }]);
+        if (picked !== undefined) bytes = await ctx.fs.readFile(picked);
+      },
+    };
+    const host = createPluginHost({
+      bridge: fsBridge,
+      importModule: async () => ({ plugin }),
+    });
+    host.load([manifest()]);
+
+    await host.activate(PLUGIN_ID);
+
+    expect(calls).toEqual([
+      'pickFile:[{"name":"Images","extensions":["png"]}]',
+      'readFile:/tmp/picked.png',
+    ]);
+    expect(bytes).toEqual(new Uint8Array([1, 2, 3]));
+    expect(host.get(PLUGIN_ID)?.state).toBe('active');
   });
 
   it('marks a plugin failed when the module exports no activate()', async () => {

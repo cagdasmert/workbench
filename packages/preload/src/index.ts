@@ -14,6 +14,9 @@ contextBridge.exposeInMainWorld('workbenchHost', {
 
   notify: (msg: string, level = 'info') => ipcRenderer.invoke('ui:notify', msg, level),
 
+  pickFile: (filters?: unknown) => ipcRenderer.invoke('fs:pickFile', filters),
+  readFile: (path: string) => ipcRenderer.invoke('fs:readFile', path),
+
   onCommand: (cb: (commandId: string) => void) => {
     const listener = (_e: unknown, id: string) => cb(id);
     ipcRenderer.on('command:invoke', listener);

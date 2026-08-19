@@ -57,6 +57,25 @@ export interface PluginContext {
   registerPanel(panelId: string, def: PanelDefinition): Disposable;
   registerCommand(commandId: string, handler: CommandHandler): Disposable;
 
+  /**
+   * Brokered filesystem access. Proxied to the main process over IPC — plugins
+   * never touch `node:fs`.
+   *
+   * `readFile` only serves paths the user granted through `pickFile` in this
+   * session. That makes `fs:read:user-selected` mean something instead of being
+   * a comment, and keeps the bridge from being an arbitrary-file-read primitive.
+   * Widening this needs a new permission scope and a decision-log entry.
+   */
+  fs: {
+    pickFile(filters?: FileFilter[]): Promise<string | undefined>;
+    /**
+     * Backed by a plain `ArrayBuffer`, never a `SharedArrayBuffer`. Stating that
+     * in the type is what lets a plugin pass the result straight to `Blob`,
+     * `createImageBitmap` or a `DataView` without a cast or a defensive copy.
+     */
+    readFile(path: string): Promise<Uint8Array<ArrayBuffer>>;
+  };
+
   workspace: {
     openPanel(panelId: string): Promise<void>;
     closePanel(panelId: string): Promise<void>;
@@ -67,6 +86,12 @@ export interface PluginContext {
   };
 
   log: Logger;
+}
+
+/** Extensions carry no leading dot: `['png', 'jpg']`. */
+export interface FileFilter {
+  name: string;
+  extensions: string[];
 }
 
 export type CommandHandler = (...args: unknown[]) => void | Promise<void>;

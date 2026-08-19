@@ -1,0 +1,16 @@
+{
+  "id": "image-viewer",
+  "name": "Image Viewer",
+  "version": "1.0.0",
+  "apiVersion": "1.0",
+  "main": "./dist/index.js",
+  "activationEvents": ["onCommand:image.open"],
+  "contributes": {
+    "panels":   [{ "id": "image.main", "title": "Image" }],
+    "menu":     [{ "command": "image.open", "label": "Image Viewer", "group": "viewers" }],
+    "commands": [{ "id": "image.open", "title": "Open Image Viewer" }],
+    "accepts":  ["image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml"],
+    "emits":    []
+  },
+  "permissions": ["fs:read:user-selected"]
+}
