@@ -5,6 +5,7 @@
 **Assumes:** macOS, Node 20+, no prior Electron experience
 **Decisions applied:** `mount(el, ctx)` panel API returning a teardown, with a React helper ([[architecture#11-decision-log|D8]]) · SDK freezes at M1, not M0 (D8) · name `Workbench` · npm workspaces
 **Revised:** 2026-08-19 — corrected the `plugin://` CORS/MIME handling, split the dev-mode CSP, moved plugin builds out of the main process, and made `scripts/dev.mjs` its own step
+**Revised a third time:** after M4 shipped — §6.5 gained the `editMenu` role and a context menu. Their absence disabled every editing shortcut app-wide and went unnoticed for four milestones.
 **Revised again:** 2026-08-19, *after building M0 end to end* — chokidar's dropped glob support, the panel container lifetime bug behind `NotFoundError: removeChild`, `connect-src`, and three gates that could not pass as written. Every code block below has now been run.
 
 ---
@@ -549,7 +550,7 @@ Build the macOS menu from the collected manifests. A click sends the command id 
 renderer — main never invokes plugin code directly.
 
 ```typescript
-import { Menu } from 'electron';
+import { Menu, type MenuItemConstructorOptions } from 'electron';
 
 function buildMenu(manifests: PluginManifest[], win: BrowserWindow) {
   const pluginItems = manifests.flatMap((m) =>
@@ -561,12 +562,53 @@ function buildMenu(manifests: PluginManifest[], win: BrowserWindow) {
 
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     { role: 'appMenu' },
+    { role: 'editMenu' },      // ← do not omit; see below
     { label: 'Plugins', submenu: pluginItems },
     { role: 'viewMenu' },
     { role: 'windowMenu' },
   ]));
 }
 ```
+
+**`{ role: 'editMenu' }` is not decoration.** On macOS the standard editing commands are not
+built into the web view — ⌘A, ⌘C, ⌘V, ⌘X and ⌘Z are routed through the Edit menu's roles.
+Electron's *default* menu includes one, but the moment you call `setApplicationMenu()` with a
+custom template you replace the default, and omitting this single line unbinds every editing
+shortcut in every text field in every plugin, app-wide.
+
+It fails in the worst possible way: nothing errors, nothing logs, and the app looks fine until
+someone tries to copy text out of a panel — which in this project was **four milestones** after
+the menu was written. If you take one thing from this section, take this line.
+
+Electron also ships **no context menu**, so right-clicking a text field does nothing until you
+build one. It belongs in the shell rather than in plugins — a plugin should not have to
+implement copy and paste, and doing it once gives it to every text field at once:
+
+```typescript
+win.webContents.on('context-menu', (_event, params) => {
+  const { editFlags, isEditable, selectionText } = params;
+  const items: MenuItemConstructorOptions[] = [];
+
+  if (isEditable) {
+    items.push(
+      { role: 'undo', enabled: editFlags.canUndo },
+      { role: 'redo', enabled: editFlags.canRedo },
+      { type: 'separator' },
+      { role: 'cut', enabled: editFlags.canCut },
+    );
+  }
+  if (isEditable || selectionText.trim() !== '') {
+    items.push({ role: 'copy', enabled: editFlags.canCopy });
+  }
+  if (isEditable) items.push({ role: 'paste', enabled: editFlags.canPaste });
+
+  items.push({ type: 'separator' }, { role: 'selectAll', enabled: editFlags.canSelectAll });
+  Menu.buildFromTemplate(items).popup({ window: win, x: params.x, y: params.y });
+});
+```
+
+Building it from `role:` entries rather than manual handlers is what makes the actions work
+inside a plugin's own DOM without the shell knowing anything about it.
 
 > **Gate 3:** `npx electron packages/main/dist/index.js` opens an empty window with a **Plugins** menu. `console.log` in `scanPlugins` shows the manifest once `hello` exists.
 
@@ -1073,6 +1115,8 @@ Run all of these before calling M0 done. Each maps to a design property that M1 
 | 9 | `window.require` is `undefined` in DevTools | contextIsolation holds |
 | 10 | `fetch('plugin://hello/%2e%2e%2f%2e%2e%2fetc/passwd')` returns **403** | traversal guard holds |
 | 11 | `fetch('plugin://not-a-plugin/index.js')` returns **404** | unknown plugin ids are rejected |
+| 12 | Type in any text field, then ⌘A ⌘C ⌘V | the Edit menu role is present (§6.5) |
+| 13 | Right-click a text field → a context menu appears | the shell provides one; Electron does not |
 
 Checks 10 and 11 use `fetch`, which is governed by **`connect-src`**, not `script-src`. If
 `plugin:` is missing there (§6.4) both come back as a CSP block rather than 403/404, and you
@@ -1114,6 +1158,9 @@ loading at once and a leak is no longer traceable to a single cause.
 | Plugin marked `failed` but its menu entry still works | `unwind()` not called in the activation catch | §8.2 |
 | Heap grows on every reload | old ES modules are retained forever — expected | not a leak; see §8.3 |
 | Menu doesn't update after manifest edit | menus are built once at startup | rescan + rebuild on manifest change (or restart — acceptable for M0) |
+| ⌘A / ⌘C / ⌘V do nothing, anywhere, in any plugin | custom application menu omits `{ role: 'editMenu' }` | §6.5 — one line, app-wide, fails silently |
+| Right-click does nothing in a text field | Electron ships no context menu | §6.5 |
+| A plugin's shortcut fires while typing in a textarea | a window-level key dispatcher sees keystrokes aimed at the focused field | ignore unmodified keys when focus is in an input/textarea/contentEditable |
 | `require is not defined` inside a plugin | plugin bundled as CJS | esbuild `--format=esm` |
 
 ---
