@@ -598,3 +598,31 @@ Neither surfaced as a visible error at first — the handler returned early, so 
 did nothing, which reads as "the registry isn't wired up" rather than "the guard is wrong". The
 second only became visible once the first was fixed. Worth remembering that a silent
 no-op keyboard handler is almost always a guard, not the registry.
+
+---
+
+## 20 · The template that stops three bugs being rediscovered
+
+**Feature:** `tools/create-plugin` · **Verdict:** the log paid for itself
+
+Three entries — 6, 13 and 15 — describe traps that are *inherent to the contract* rather than
+defects in it, and each was rediscovered in a different plugin before this existed:
+
+| trap | entries | why it is not a host bug |
+|---|---|---|
+| async restore races the first save | 6, 13 | every `PluginContext` method is async by invariant 1 |
+| `onChange` returns a `Disposable`, not a cleanup function | 15 | invariant 8 — the host must be able to track and unwind it |
+| routed content arrives as a `Content` object, not a bare value | 9 | the bus is typed; unwrapping is the plugin's job |
+
+`npm run create-plugin <id>` emits a plugin with all three pre-solved and commented in place,
+plus a manifest, a panel, a command, a declared setting, and persistence. It also adds the
+package to the solution `tsconfig.json` — a package missing from that file silently never
+typechecks, which is its own small trap.
+
+Generated output typechecks, bundles, and runs with **zero edits**: verified mounting as
+`active` with its declared setting rendered by the shell's settings sheet and live-updating the
+panel.
+
+This was not in any milestone. It earned its place because the log made the pattern visible —
+three separate entries pointing at the same missing artifact is an argument that no single
+plugin could have made.

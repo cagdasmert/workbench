@@ -4,7 +4,8 @@
   "type": "module",
   "workspaces": [
     "packages/*",
-    "plugins/*"
+    "plugins/*",
+    "tools/*"
   ],
   "scripts": {
     "dev": "node scripts/dev.mjs",
@@ -12,7 +13,8 @@
     "test": "vitest run",
     "build:app": "node scripts/build-app.mjs",
     "build:plugins": "node scripts/build-plugins.mjs",
-    "build:shell": "npm run build -w @workbench/shell"
+    "build:shell": "npm run build -w @workbench/shell",
+    "create-plugin": "node tools/create-plugin/index.mjs"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
