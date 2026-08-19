@@ -20,6 +20,9 @@ contextBridge.exposeInMainWorld('workbenchHost', {
   netFetch: (pluginId: string, url: string, init?: unknown) =>
     ipcRenderer.invoke('net:fetch', pluginId, url, init),
 
+  session: () => ipcRenderer.invoke('session:get'),
+  setSessionPanel: (panelId: string | null) => ipcRenderer.invoke('session:setPanel', panelId),
+
   keyOverrides: () => ipcRenderer.invoke('keys:overrides'),
   setKeyOverride: (command: string, key: string | null) =>
     ipcRenderer.invoke('keys:set', command, key),

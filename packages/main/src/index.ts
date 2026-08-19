@@ -13,6 +13,7 @@ import { registerNetBroker, loadNetPermissions } from './net-broker.js';
 import { registerSettingsBroker, loadSettingsSchemas } from './settings-broker.js';
 import { loadPluginState, registerPluginStateBroker, disabledIds } from './plugin-state.js';
 import { loadKeybindings, registerKeybindingsBroker } from './keybindings-broker.js';
+import { loadSession, initialBounds, trackWindow, registerSessionBroker } from './session.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -58,8 +59,8 @@ function installCsp(): void {
 
 function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
-    width: 1280,
-    height: 820,
+    ...initialBounds(),
+    show: false,           // avoid a flash at the default size before restore
     titleBarStyle: 'default',
     webPreferences: {
       preload: path.join(__dirname, '../../preload/dist/index.cjs'),
@@ -77,6 +78,8 @@ function createWindow(): BrowserWindow {
     // Not loadFile(): a file:// origin cannot carry a CSP.
     void win.loadURL(`${APP_ORIGIN}/index.html`);
   }
+  win.once('ready-to-show', () => win.show());
+  trackWindow(win);
   return win;
 }
 
@@ -87,6 +90,7 @@ app.whenReady().then(async () => {
 
   await loadPluginState();
   await loadKeybindings();
+  await loadSession();
 
   const manifests = await scanPlugins(PLUGIN_DEV_DIR);
   console.log(
@@ -113,6 +117,7 @@ app.whenReady().then(async () => {
   registerPluginStateBroker(win, () => buildMenu(manifests, win));
   registerStorageBroker();
   registerNetBroker();
+  registerSessionBroker();
   registerKeybindingsBroker(() => {
     if (!win.isDestroyed()) win.webContents.send('keys:changed');
   });

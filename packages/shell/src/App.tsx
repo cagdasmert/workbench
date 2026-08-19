@@ -37,10 +37,32 @@ export function App() {
       host.setDisabledIds(disabled);      // before load, so nothing can wake early
       host.load(discovered);
       setManifests(discovered);
+
+      // Restore last session's panel. Must come after load() and after the
+      // disabled set, or a disabled plugin gets woken by its own restore.
+      const { activePanelId } = await window.workbenchHost.session();
+      if (activePanelId !== undefined) {
+        const restored = await host.restorePanel(activePanelId);
+        if (!restored) {
+          // plugin removed, disabled, or no longer contributing that panel
+          void window.workbenchHost.setSessionPanel(null);
+        }
+      }
+      setBooted(true);
     })();
   }, [host]);
 
+  const [booted, setBooted] = useState(false);
+
   useEffect(() => host.onActivePanelChange(setPanelId), [host]);
+
+  // Persist which panel is open — but never before the restore has run, or the
+  // initial `undefined` overwrites the very panel we are about to reopen. Same
+  // shape as the plugin-side trap in change log entries 6 and 13.
+  useEffect(() => {
+    if (!booted) return;
+    void window.workbenchHost.setSessionPanel(panelId ?? null);
+  }, [booted, panelId]);
 
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);

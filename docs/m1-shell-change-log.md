@@ -669,3 +669,52 @@ policy that would finally be enforced — cheap, and awkward to add once somethi
 looser version.
 
 **Contract impact:** none. No SDK change, no manifest change, no plugin change.
+
+---
+
+## 22 · Restoring a panel is not invoking a command
+
+**Feature:** session restore · **Verdict:** host gained a method — no contract change
+
+The obvious way to reopen last session's panel is to invoke the command that opens it. That is
+wrong twice over: a plugin may contribute a panel with **no command at all**, and a command may
+do more than open a panel (`json.format` reformats, then opens). Restore has to address the
+panel directly.
+
+`host.restorePanel(panelId)` finds the owning plugin from the manifests, activates it, and
+opens the panel — returning `false` rather than throwing when it cannot. Four ways it fails,
+and **all four are normal after an update**, not errors:
+
+- the plugin was removed
+- the plugin is disabled
+- the plugin no longer contributes that panel id
+- the plugin threw during activation
+
+The shell clears the stored panel on a failed restore, so a plugin removed while its panel was
+open does not leave a session that fails forever.
+
+**The same async trap, a fourth time.** The effect that persists the active panel had to be
+gated on a `booted` flag, or the initial `undefined` overwrites the very panel being restored —
+identical in shape to change log entries 6 and 13, this time in the shell rather than a plugin.
+It is genuinely inherent to async state restoration, not a plugin-authoring mistake.
+
+## 23 · Restored window bounds have to be re-validated
+
+**Feature:** session restore · **Verdict:** correctness detail worth stating
+
+Saved bounds are meaningless on their own: a window last positioned on an external monitor that
+is no longer attached would be restored entirely offscreen, with no way to drag it back and no
+error to explain why the app "did not start".
+
+`initialBounds()` re-checks the saved rectangle against the *current* displays and requires a
+real overlap (>120×80px), not merely a touching corner. On failure it keeps the saved **size**
+and lets the platform place the window. Verified by planting `{-9000, -9000}` — the guard fires,
+logs, and the window comes back visible at its saved size.
+
+One observed quirk, left alone: macOS adjusts `x` once on first restore (120 → 218 here). It is
+stable and non-cumulative — the adjusted value round-trips exactly on every subsequent launch —
+so it is platform placement, not drift.
+
+Panel *contents* are deliberately not part of this. `json-tools` already persists its document
+through `ctx.storage`, so restoring the panel restores the work as a consequence. The session
+file stays a pointer, not a snapshot.

@@ -310,6 +310,29 @@ export class PluginHost {
     return out.sort((a, b) => a.title.localeCompare(b.title));
   }
 
+  /**
+   * Reopen a panel from a previous session. Deliberately distinct from
+   * `invokeCommand`: the plugin owning a panel may declare no command for it,
+   * and restoring must not depend on one existing.
+   *
+   * Returns false when the panel cannot be restored — the plugin is gone,
+   * disabled, failed to activate, or no longer contributes that panel. All four
+   * are normal after an update, so a failed restore is not an error.
+   */
+  async restorePanel(panelId: string): Promise<boolean> {
+    const owner = [...this.registry.values()].find((rec) =>
+      (rec.manifest.contributes.panels ?? []).some((p) => p.id === panelId));
+
+    if (owner === undefined) return false;
+    if (this.disabled.has(owner.manifest.id)) return false;
+
+    await this.activate(owner.manifest.id);
+    if (!this.panels.has(panelId)) return false;
+
+    this.setActivePanel(panelId);
+    return true;
+  }
+
   /** Shell-owned commands. Same registry, same palette, no special path. */
   registerShellCommand(id: string, title: string, handler: CommandHandler): Disposable {
     this.commands.set(id, { pluginId: SHELL_ID, handler, title });

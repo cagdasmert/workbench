@@ -23,6 +23,8 @@ const bridge: WorkbenchHostBridge = {
   pickFile: async () => undefined,
   readFile: async () => new Uint8Array(),
   netFetch: async () => ({ status: 200, ok: true, headers: {}, body: '' }),
+  session: async () => ({}),
+  setSessionPanel: async () => undefined,
   keyOverrides: async () => ({}),
   setKeyOverride: async () => undefined,
   onKeysChanged: () => () => undefined,
@@ -475,6 +477,50 @@ describe('contributions', () => {
     expect(disposed).toBe(true);
     expect(host.get(PLUGIN_ID)?.state).toBe('disposed');
     expect(host.getPanel('test.main')).toBeUndefined();
+  });
+
+  it('restores a panel without needing a command for it', async () => {
+    const plugin: Plugin = {
+      activate(ctx) { ctx.registerPanel('test.main', { mount: () => undefined }); },
+    };
+    // no commands declared at all
+    const host = hostFor(plugin, manifest({
+      activationEvents: [],
+      contributes: { panels: [{ id: 'test.main', title: 'T' }] },
+    }));
+
+    expect(await host.restorePanel('test.main')).toBe(true);
+    expect(host.get(PLUGIN_ID)?.state).toBe('active');
+    expect(host.getActivePanelId()).toBe('test.main');
+  });
+
+  it('refuses to restore a panel whose plugin is disabled', async () => {
+    const plugin: Plugin = {
+      activate(ctx) { ctx.registerPanel('test.main', { mount: () => undefined }); },
+    };
+    const host = hostFor(plugin, manifest({
+      contributes: { panels: [{ id: 'test.main', title: 'T' }] },
+    }));
+    await host.setEnabled(PLUGIN_ID, false);
+
+    expect(await host.restorePanel('test.main')).toBe(false);
+    expect(host.get(PLUGIN_ID)?.state).toBe('discovered');
+    expect(host.getActivePanelId()).toBeUndefined();
+  });
+
+  it('reports a failed restore for a panel that no longer exists', async () => {
+    const host = hostFor(noop, manifest({ contributes: { panels: [] } }));
+    expect(await host.restorePanel('gone.main')).toBe(false);
+  });
+
+  it('reports a failed restore when the plugin throws on activate', async () => {
+    const broken: Plugin = { activate() { throw new Error('boom'); } };
+    const host = hostFor(broken, manifest({
+      contributes: { panels: [{ id: 'test.main', title: 'T' }] },
+    }));
+
+    expect(await host.restorePanel('test.main')).toBe(false);
+    expect(host.get(PLUGIN_ID)?.state).toBe('failed');
   });
 
   it('marks a plugin failed when the module exports no activate()', async () => {
