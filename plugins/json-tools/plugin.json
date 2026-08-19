@@ -48,6 +48,16 @@
     ],
     "emits": [
       "application/json"
+    ],
+    "keybindings": [
+      {
+        "command": "json.open",
+        "key": "cmd+shift+j"
+      },
+      {
+        "command": "json.format",
+        "key": "cmd+shift+f"
+      }
     ]
   },
   "permissions": [

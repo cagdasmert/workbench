@@ -49,6 +49,37 @@ function entries<T>(
 
 const PROP_TYPES = new Set(['string', 'number', 'boolean']);
 
+const MODIFIER_ORDER = ['cmd', 'alt', 'ctrl', 'shift'];
+
+/**
+ * Canonical chord form, so a manifest writing "Shift+Cmd+F" and a user rebind
+ * writing "cmd+shift+f" compare equal. Normalizing at discovery means the
+ * matcher never has to.
+ */
+export function normalizeChord(raw: string, where: string): string {
+  const parts = raw.toLowerCase().split('+').map((p) => p.trim()).filter((p) => p !== '');
+  const mods: string[] = [];
+  let key = '';
+
+  for (const part of parts) {
+    const mod = part === 'meta' || part === 'command' ? 'cmd'
+      : part === 'control' ? 'ctrl'
+      : part === 'option' ? 'alt'
+      : part;
+    if (MODIFIER_ORDER.includes(mod)) {
+      if (!mods.includes(mod)) mods.push(mod);
+    } else if (key === '') {
+      key = mod;
+    } else {
+      throw new Error(`${where}: chord "${raw}" has more than one non-modifier key`);
+    }
+  }
+
+  if (key === '') throw new Error(`${where}: chord "${raw}" has no key`);
+  mods.sort((a, b) => MODIFIER_ORDER.indexOf(a) - MODIFIER_ORDER.indexOf(b));
+  return [...mods, key].join('+');
+}
+
 /**
  * The shell renders a form from this and writes values back, so a malformed
  * schema is not a cosmetic problem — it is an uneditable or mistyped setting.
@@ -144,6 +175,11 @@ export function validateManifest(raw: unknown, where: string): PluginManifest {
     };
   });
 
+  const keybindings = entries(c['keybindings'], 'keybindings', where, (kb, at) => ({
+    command: requireString(kb, 'command', at),
+    key: normalizeChord(requireString(kb, 'key', at), at),
+  }));
+
   const accepts = c['accepts'] === undefined
     ? undefined : stringArray(c['accepts'], 'accepts', where);
   const emits = c['emits'] === undefined
@@ -167,6 +203,7 @@ export function validateManifest(raw: unknown, where: string): PluginManifest {
       ...(accepts === undefined ? {} : { accepts }),
       ...(emits === undefined ? {} : { emits }),
       ...(settings === undefined ? {} : { settings }),
+      ...(keybindings === undefined ? {} : { keybindings }),
     },
     ...(permissions === undefined ? {} : { permissions }),
   };

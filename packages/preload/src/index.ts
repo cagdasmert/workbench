@@ -20,6 +20,15 @@ contextBridge.exposeInMainWorld('workbenchHost', {
   netFetch: (pluginId: string, url: string, init?: unknown) =>
     ipcRenderer.invoke('net:fetch', pluginId, url, init),
 
+  keyOverrides: () => ipcRenderer.invoke('keys:overrides'),
+  setKeyOverride: (command: string, key: string | null) =>
+    ipcRenderer.invoke('keys:set', command, key),
+  onKeysChanged: (cb: () => void) => {
+    const listener = () => cb();
+    ipcRenderer.on('keys:changed', listener);
+    return () => ipcRenderer.off('keys:changed', listener);
+  },
+
   disabledPlugins: () => ipcRenderer.invoke('plugins:disabled'),
   setPluginEnabled: (pluginId: string, enabled: boolean) =>
     ipcRenderer.invoke('plugins:setEnabled', pluginId, enabled),

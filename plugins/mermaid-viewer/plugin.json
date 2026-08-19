@@ -65,6 +65,12 @@
     ],
     "emits": [
       "image/svg+xml"
+    ],
+    "keybindings": [
+      {
+        "command": "mermaid.open",
+        "key": "cmd+shift+m"
+      }
     ]
   }
 }

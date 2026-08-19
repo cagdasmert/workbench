@@ -10,3 +10,10 @@ export type {
 } from './host.js';
 export { getBridge } from './bridge.js';
 export type { WorkbenchHostBridge } from './bridge.js';
+export {
+  chordFromEvent,
+  chordMap,
+  conflicts,
+  resolveBindings,
+} from './keys.js';
+export type { Binding } from './keys.js';

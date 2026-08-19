@@ -66,6 +66,12 @@ export interface PluginManifest {
     accepts?: string[];
     emits?: string[];
     settings?: SettingsSchema;
+    /**
+     * Default chords only. User rebinds are stored separately by the shell and
+     * always win, so shipping a new default in a plugin update never clobbers
+     * one — see `keybindings.json` in architecture §7.
+     */
+    keybindings?: KeybindingContribution[];
   };
   permissions?: string[];
 }
@@ -236,6 +242,16 @@ export type JsonValue =
   | null
   | JsonValue[]
   | { [key: string]: JsonValue };
+
+/**
+ * `key` is a normalized chord: lowercase, modifiers first in the fixed order
+ * `cmd alt ctrl shift`, joined by `+` — e.g. `cmd+k`, `cmd+shift+f`, `alt+enter`.
+ * `cmd` means Command on macOS and Control elsewhere.
+ */
+export interface KeybindingContribution {
+  command: string;
+  key: string;
+}
 
 /** Extensions carry no leading dot: `['png', 'jpg']`. */
 export interface FileFilter {

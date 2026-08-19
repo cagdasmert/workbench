@@ -545,3 +545,56 @@ permissions — which is the first time `permissions` has been *shown* anywhere,
 after being declared.
 
 **Contract impact:** none.
+
+---
+
+## 18 · Overrides are a diff, never a snapshot
+
+**Feature:** keybindings · **Verdict:** SDK 1.4 → 1.5, additive
+
+Architecture §6 asks for "user overrides stored separately from defaults so plugin updates
+never clobber them". The word doing the work is **separately**.
+
+The tempting implementation is to seed `keybindings.json` with the resolved set at first run and
+edit it in place. That breaks in one of two ways depending on merge order: either a plugin's
+new default is permanently ignored because the snapshot shadows it, or re-seeding overwrites
+the user's rebind. Both are silent.
+
+So `keybindings.json` holds **only** what the user changed. Anything absent falls through to
+whatever the plugin currently declares, which makes updating a default just work.
+
+An empty string is a real value meaning "deliberately unbound", distinct from "not overridden":
+`{...defaults, ...overrides}` cannot express that, which is why `resolveBindings` is explicit
+about the three states. Setting `null` deletes the override and restores the default.
+
+Verified across the full lifecycle — plugin default fires → override fires and the old chord is
+dead → unbind kills both → `null` restores the default and empties the file.
+
+**Shell shortcuts went through the same registry.** ⌘K had been hardcoded since M2; it is now a
+row in `SHELL_KEYS` resolved by the same function as plugin defaults, so it is reboundable and
+there is no second dispatch path to drift.
+
+**Contract impact:** additive — `contributes.keybindings` and `KeybindingContribution`. Chords
+are normalized at manifest-validation time, so `Shift+Cmd+F` and `cmd+shift+f` compare equal and
+the matcher never has to care.
+
+---
+
+## 19 · Two bugs in one guard
+
+**Feature:** keybindings · **Verdict:** my bugs, worth recording
+
+The dispatcher ignored every keypress, twice over, for two different reasons in the same line.
+
+**Inverted condition.** `closest()` returns `null` when there is no match, so
+`if (target?.closest('.keys-recording') !== null) return;` bails on every *normal* keypress —
+exactly backwards. It reads as "skip while recording"; it means "skip unless recording".
+
+**`e.target` is not always an Element.** After fixing the logic it threw
+`target.closest is not a function`: a synthetic `window.dispatchEvent` sets `target` to
+`window`, and `document` appears in other paths. `target instanceof Element` is the check.
+
+Neither surfaced as a visible error at first — the handler returned early, so shortcuts simply
+did nothing, which reads as "the registry isn't wired up" rather than "the guard is wrong". The
+second only became visible once the first was fixed. Worth remembering that a silent
+no-op keyboard handler is almost always a guard, not the registry.

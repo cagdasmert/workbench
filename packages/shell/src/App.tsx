@@ -1,6 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   createPluginHost,
+  chordFromEvent,
+  chordMap,
+  resolveBindings,
+  type Binding,
   type CommandDescriptor,
   type RouteChoice,
 } from '@workbench/plugin-host';
@@ -9,6 +13,15 @@ import { PanelHost } from './PanelHost.js';
 import { CommandPalette } from './CommandPalette.js';
 import { SettingsPanel } from './SettingsPanel.js';
 import { PluginManager } from './PluginManager.js';
+import { Keybindings } from './Keybindings.js';
+
+/** Shell defaults. Data, resolved through the same path as plugin defaults. */
+const SHELL_KEYS = [
+  { command: 'shell.commandPalette', key: 'cmd+k' },
+  { command: 'shell.openSettings', key: 'cmd+,' },
+  { command: 'shell.openPlugins', key: 'cmd+shift+p' },
+  { command: 'shell.openKeybindings', key: 'cmd+alt+k' },
+];
 
 export function App() {
   const [host] = useState(() => createPluginHost());
@@ -32,6 +45,8 @@ export function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [pluginsOpen, setPluginsOpen] = useState(false);
+  const [keysOpen, setKeysOpen] = useState(false);
+  const [overrides, setOverrides] = useState<Record<string, string>>({});
   const [route, setRoute] = useState<RouteChoice | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -70,22 +85,51 @@ export function App() {
         setPluginsOpen(true);
       }),
       host.registerShellCommand('shell.commandPalette', 'Show Command Palette', async () => {
-        setPaletteOpen(true);
+        setPaletteOpen((open) => !open);
+      }),
+      host.registerShellCommand('shell.openKeybindings', 'Open Keyboard Shortcuts', async () => {
+        setKeysOpen(true);
       }),
     ];
     return () => { for (const d of disposables) void d.dispose(); };
   }, [host]);
 
+  const refreshOverrides = useCallback(async () => {
+    setOverrides(await window.workbenchHost.keyOverrides());
+  }, []);
+
+  useEffect(() => { void refreshOverrides(); }, [refreshOverrides]);
+  useEffect(
+    () => window.workbenchHost.onKeysChanged(() => void refreshOverrides()),
+    [refreshOverrides],
+  );
+
+  const bindings: Binding[] = useMemo(
+    () => resolveBindings(manifests, SHELL_KEYS, overrides),
+    [manifests, overrides],
+  );
+
+  // One dispatcher for every chord, shell and plugin alike — there is no
+  // hardcoded shortcut left to drift from the registry.
   useEffect(() => {
+    const map = chordMap(bindings);
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
-        e.preventDefault();
-        setPaletteOpen((open) => !open);
-      }
+      // While a chord is being recorded, the sheet owns the keyboard.
+      // e.target is not always an Element — it is `window` for a synthetic
+      // dispatch and `document` in some paths, neither of which has closest().
+      const target = e.target;
+      if (target instanceof Element && target.closest('.keys-recording') !== null) return;
+
+      const chord = chordFromEvent(e);
+      if (chord === null) return;
+      const command = map.get(chord);
+      if (command === undefined) return;
+      e.preventDefault();
+      void host.invokeCommand(command);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  }, [host, bindings]);
 
   // The preload returns the unsubscribe directly, which is exactly what an
   // effect wants back. Without it, hot reload would stack duplicate listeners.
@@ -132,6 +176,16 @@ export function App() {
         <PanelHost panel={panel} onReload={(pluginId) => void host.reload(pluginId)} />
       </main>
       {notice !== null && <div className="shell-toast">{notice}</div>}
+      {keysOpen && (
+        <Keybindings
+          bindings={bindings}
+          commands={commands}
+          onClose={() => setKeysOpen(false)}
+          onSet={(command, key) => {
+            void window.workbenchHost.setKeyOverride(command, key);
+          }}
+        />
+      )}
       {pluginsOpen && (
         <PluginManager host={host} revision={revision} onClose={() => setPluginsOpen(false)} />
       )}

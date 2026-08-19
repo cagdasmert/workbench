@@ -11,6 +11,7 @@ import { registerStorageBroker } from './storage-broker.js';
 import { registerNetBroker, loadNetPermissions } from './net-broker.js';
 import { registerSettingsBroker, loadSettingsSchemas } from './settings-broker.js';
 import { loadPluginState, registerPluginStateBroker, disabledIds } from './plugin-state.js';
+import { loadKeybindings, registerKeybindingsBroker } from './keybindings-broker.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -75,6 +76,7 @@ app.whenReady().then(async () => {
   handlePluginProtocol();
 
   await loadPluginState();
+  await loadKeybindings();
 
   const manifests = await scanPlugins(PLUGIN_DEV_DIR);
   console.log(
@@ -101,6 +103,9 @@ app.whenReady().then(async () => {
   registerPluginStateBroker(win, () => buildMenu(manifests, win));
   registerStorageBroker();
   registerNetBroker();
+  registerKeybindingsBroker(() => {
+    if (!win.isDestroyed()) win.webContents.send('keys:changed');
+  });
   registerSettingsBroker((pluginId, key, value) => {
     if (!win.isDestroyed()) win.webContents.send('settings:changed', pluginId, key, value);
   });

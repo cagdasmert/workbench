@@ -304,3 +304,95 @@ body {
   background: var(--error-bg);
   border-radius: 6px;
 }
+
+/* ── keybindings sheet ───────────────────────────────────────── */
+
+.keys-sheet {
+  width: min(600px, 92vw);
+  max-height: 74vh;
+  overflow-y: auto;
+  background: var(--chrome-bg);
+  border: 1px solid var(--chrome-border);
+  border-radius: 10px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.32);
+}
+
+.keys-sheet header {
+  position: sticky;
+  top: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  font-weight: 600;
+  background: var(--chrome-bg);
+  border-bottom: 1px solid var(--chrome-border);
+}
+
+.keys-sheet header button {
+  font: inherit;
+  border: none;
+  background: transparent;
+  color: var(--chrome-muted);
+  cursor: pointer;
+}
+
+.keys-hint {
+  margin: 0;
+  padding: 10px 16px;
+  font-size: 11px;
+  color: var(--chrome-muted);
+  border-bottom: 1px solid var(--chrome-border);
+}
+
+.keys-sheet ul { list-style: none; margin: 0; padding: 6px; }
+
+.keys-sheet li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  border-radius: 6px;
+}
+
+.keys-sheet li:hover { background: var(--workspace-bg); }
+
+.keys-title { display: flex; flex-direction: column; flex: 1; min-width: 0; font-size: 13px; }
+.keys-id { font-size: 10px; color: var(--chrome-muted); }
+
+.keys-badge,
+.keys-clash {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--chrome-border);
+  color: var(--chrome-muted);
+}
+
+.keys-clash { color: var(--error-fg); border-color: currentColor; }
+
+.keys-chord {
+  font: inherit;
+  font-size: 12px;
+  min-width: 84px;
+  padding: 3px 10px;
+  border: 1px solid var(--chrome-border);
+  border-radius: 5px;
+  background: var(--workspace-bg);
+  color: inherit;
+  cursor: pointer;
+}
+
+.keys-recording {
+  border-color: var(--accent-fg, #2563eb);
+  color: var(--accent-fg, #2563eb);
+}
+
+.keys-clear {
+  font: inherit;
+  width: 26px;
+  border: none;
+  background: transparent;
+  color: var(--chrome-muted);
+  cursor: pointer;
+}

@@ -85,7 +85,13 @@
         "default": "",
         "description": "Model id; empty uses the backend's default"
       }
-    }
+    },
+    "keybindings": [
+      {
+        "command": "ai.open",
+        "key": "cmd+shift+a"
+      }
+    ]
   },
   "permissions": [
     "net:fetch:localhost:1234",
