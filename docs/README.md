@@ -22,7 +22,7 @@ every existing plugin more useful instead of just adding another tab.
 
 | Milestone | Deliverable | Status |
 |---|---|---|
-| **M0** | Shell + `hello` plugin + hot reload | ☐ not started |
+| **M0** | Shell + `hello` plugin + hot reload | ✅ **done** — all 11 checks in the guide's §13 pass |
 | **M1** | Plugin API v1 + mermaid / image / JSON viewers | ☐ |
 | **M2** | Command palette + typed content bus | ☐ |
 | **M3** | Settings, keybindings, plugin manager | ☐ |
@@ -109,7 +109,9 @@ Full rationale in [[architecture#11-decision-log|the decision log]].
 ## Next Actions
 
 - [ ] Pick a real name
-- [ ] Decide: React components as panels, vs framework-agnostic `mount(el, ctx)`
-- [ ] Scaffold the workspace (`packages/`, `plugins/`, `tools/create-plugin`)
-- [ ] Build M0: shell + `hello` plugin + hot reload loop
-- [ ] Freeze `@workbench/plugin-sdk` v1 types before starting M1
+- [x] Decide: React components as panels, vs framework-agnostic `mount(el, ctx)` — `mount` returning a teardown, [[architecture#11-decision-log|D8]]
+- [x] Scaffold the workspace (`packages/`, `plugins/`)
+- [x] Build M0: shell + `hello` plugin + hot reload loop
+- [ ] Tag `@workbench/plugin-sdk@0.1` — **not** 1.0; the freeze moves to end of M1 (D8)
+- [ ] M1: add `storage`, `settings`, `fs` to the SDK, then mermaid → image → JSON
+- [ ] Keep the shell-change log during M1 — an empty one is what earns the 1.0 tag

@@ -5,6 +5,7 @@
 **Assumes:** macOS, Node 20+, no prior Electron experience
 **Decisions applied:** `mount(el, ctx)` panel API returning a teardown, with a React helper ([[architecture#11-decision-log|D8]]) · SDK freezes at M1, not M0 (D8) · name `Workbench` · npm workspaces
 **Revised:** 2026-08-19 — corrected the `plugin://` CORS/MIME handling, split the dev-mode CSP, moved plugin builds out of the main process, and made `scripts/dev.mjs` its own step
+**Revised again:** 2026-08-19, *after building M0 end to end* — chokidar's dropped glob support, the panel container lifetime bug behind `NotFoundError: removeChild`, `connect-src`, and three gates that could not pass as written. Every code block below has now been run.
 
 ---
 
@@ -169,7 +170,12 @@ one with — it is the single easiest gate to skip by accident. `electron-builde
 deliberately absent: it belongs to M4 and installing it now just slows every `npm i` for
 four milestones.
 
-> **Gate 1:** `npm run typecheck` exits 0 (trivially — there's no code yet). `npx electron --version` prints a version.
+One wrinkle: a solution-style root `tsconfig.json` (`"files": []` plus `"references"`) is
+an error while the references array is still empty — `TS18002: The 'files' list in config
+file is empty`. Leave the root tsconfig out until Step 2 adds the SDK reference, or accept
+that this half of Gate 1 goes green one step late. It is not a misconfiguration.
+
+> **Gate 1:** `npx electron --version` prints a version. `npm run typecheck` exits 0 **once Step 2 has added the first project reference** — see the note above.
 
 ---
 
@@ -507,16 +513,35 @@ header from main instead, in one place:
 session.defaultSession.webRequest.onHeadersReceived((details, cb) => {
   const csp = DEV
     ? "default-src 'self'; script-src 'self' 'unsafe-inline' plugin:; " +
-      "style-src 'self' 'unsafe-inline'; connect-src 'self' ws://localhost:5173;"
+      "style-src 'self' 'unsafe-inline'; img-src 'self' data: plugin:; " +
+      "connect-src 'self' plugin: ws://localhost:5173;"
     : "default-src 'self'; script-src 'self' plugin:; " +
-      "style-src 'self' 'unsafe-inline'; connect-src 'self';";
+      "style-src 'self' 'unsafe-inline'; img-src 'self' data: plugin:; " +
+      "connect-src 'self' plugin:;";
   cb({ responseHeaders: { ...details.responseHeaders, 'Content-Security-Policy': [csp] } });
 });
 ```
 
 Architecture §9 still holds: the shipped policy is the strict one, and `'unsafe-inline'` is
-scoped to the dev server alone. Note `plugin:` appears in **both** — omit it and the module
-import from §6.3 is blocked silently.
+scoped to the dev server alone.
+
+`plugin:` has to appear in **three** directives, and each omission fails differently and
+silently:
+
+- **`script-src`** — without it the dynamic `import()` of plugin code is blocked outright.
+- **`connect-src`** — without it `fetch('plugin://…')` is blocked. This governs the
+  verification checks in §13 and, more importantly, any plugin fetching its own bundled
+  assets. An image viewer loading a file it shipped with hits this immediately.
+- **`img-src`** — same story for `<img src="plugin://…">`.
+
+None of these produce an error you can act on. They produce a blocked request and a console
+line that reads like a bundler problem.
+
+**One thing this does not cover:** `onHeadersReceived` only fires for requests that carry
+headers. A production build loaded with `loadFile()` is a `file://` URL, so **the strict
+policy is never applied there** — it protects dev and not prod. The real fix is serving the
+shell over a custom `app://` scheme the same way §6.3 serves plugins, which is M4 packaging
+work. Know that the gap exists rather than discovering it during packaging.
 
 ### 6.5 Native menu
 
@@ -582,7 +607,22 @@ Every subscription returns its own unsubscribe function. Not a convenience — h
 re-register listeners on every plugin edit, and without disposal you get duplicate handlers
 that are maddening to diagnose because everything *works*, just twice.
 
-> **Gate 4:** in DevTools console, `window.workbenchHost` is an object; `await window.workbenchHost.listPlugins()` returns `[]` or the hello manifest.
+**This gate cannot be checked when you reach it.** DevTools needs a renderer, and there is no
+shell until Step 6 and no dev server until Step 8. Either defer the check to Step 6, or prove
+it now from the main process, which needs no UI:
+
+```typescript
+// temporary, delete once Step 6 lands
+win.webContents.once('did-finish-load', async () => {
+  console.log(await win.webContents.executeJavaScript(
+    '({ type: typeof window.workbenchHost, req: typeof window.require })'));
+});
+```
+
+`executeJavaScript` runs in the page's main world and is not subject to CSP, so this works
+even before the shell exists. It also gets you verification check #9 five steps early.
+
+> **Gate 4:** `window.workbenchHost` is an object with `listPlugins`, `notify`, `onCommand`, `onPluginChanged`; `listPlugins()` returns the manifests; `window.require` is `undefined`.
 
 ---
 
@@ -691,7 +731,18 @@ Check #8 is about **DOM subtrees**, not memory.
 ### 8.4 The disposal test
 
 `plugin-host` imports no Electron (invariant 4), so it unit-tests under plain Vitest against
-a stub `window.workbenchHost` — no Electron harness, no spectron, no window. That ease is a
+a stub `window.workbenchHost` — no Electron harness, no spectron, no window.
+
+Scope Vitest to source first, or every suite runs **twice** — once from `src/*.test.ts` and
+once from the compiled copy `tsc -b` emitted. Two identical failures at different paths is a
+genuinely confusing way to start debugging:
+
+```typescript
+// vitest.config.ts
+export default defineConfig({
+  test: { include: ['packages/*/src/**/*.test.ts'] },
+});
+``` That ease is a
 direct payoff of the invariant, and it is worth noticing that the constraint bought you
 something concrete rather than only costing you a package boundary.
 
@@ -714,6 +765,7 @@ Minimal. A container div, a panel mount point, and command routing.
 ```tsx
 function PanelHost({ panel }: { panel: ActivePanel | null }) {
   const ref = useRef<HTMLDivElement>(null);
+  const queue = useRef<Promise<void>>(Promise.resolve());
 
   useEffect(() => {
     const el = ref.current;
@@ -721,31 +773,67 @@ function PanelHost({ panel }: { panel: ActivePanel | null }) {
 
     let disposed = false;
     let teardown: PanelTeardown | void;
-    const run = () => {
-      try { return teardown?.(); } catch (err) { console.error('teardown failed', err); }
+
+    const runTeardown = async () => {
+      try { await teardown?.(); }
+      catch (err) { console.error('[shell] panel teardown failed', err); }
+      teardown = undefined;
     };
 
-    const mounted = Promise.resolve(panel.definition.mount(el, panel.ctx))
-      .then((t) => { teardown = t; if (disposed) return run(); })
-      .catch((err) => renderErrorCard(el, err));   // invariant 7, non-React path
+    queue.current = queue.current.then(async () => {
+      if (disposed) return;                  // torn down before our turn came up
+      try { teardown = await panel.definition.mount(el, panel.ctx); }
+      catch (err) { renderErrorCard(el, err); }   // invariant 7, non-React path
+    });
 
     return () => {
       disposed = true;
-      void mounted.then(() => { run(); el.replaceChildren(); });
+      queue.current = queue.current.then(async () => {
+        await runTeardown();
+        el.replaceChildren();
+      });
     };
   }, [panel]);
 
-  return <div ref={ref} className="panel-host" />;
+  // The container is rendered unconditionally and never swapped.
+  return (
+    <>
+      {!panel && <div className="panel-empty">No panel open.</div>}
+      <div ref={ref} className="panel-host" hidden={!panel} />
+    </>
+  );
 }
 ```
 
-Three things are going on here, and the naive version gets all three wrong.
+Four things are going on here, and the naive version gets all four wrong. **The last two are
+the ones that will actually cost you an evening at Step 9**, and neither is visible until hot
+reload exists — so build them now rather than debugging them later.
 
-**`mount` is async, so the cleanup has to wait for it.** Fire-and-forget the mount promise
-and a fast reload can run teardown before the teardown function even exists, or mount into an
-element React has already detached. Chaining cleanup off `mounted` and re-checking `disposed`
-inside the `.then` is what makes rapid saves safe. This is the bug that shows up as a ghost
-panel after the eighth reload and is nearly impossible to attribute.
+**`mount` is async, so cleanup has to wait for it.** Fire-and-forget the mount promise and a
+fast reload can run teardown before the teardown function even exists.
+
+**React's cleanup contract is synchronous, so a flag is not enough.** A `disposed` boolean
+protects one generation against itself; it does nothing to stop generation N's teardown
+landing *after* generation N+1 has mounted into the same element. When that happens the new
+React root's DOM is wiped by the old cleanup's `replaceChildren()`, and the old root's
+`unmount()` throws:
+
+```
+Uncaught NotFoundError: Failed to execute 'removeChild' on 'Node':
+The node to be removed is not a child of this node.
+```
+
+React guarantees `cleanup(N)` runs before `effect(N+1)`, so appending both to a single
+promise chain on a ref serializes them into `mount(N) → teardown(N) → mount(N+1)`, always.
+That is what `queue` is for.
+
+**The container div must never be unmounted by React.** This is the subtle one. During a
+reload the plugin's panel registration is disposed, which clears the active panel, which — if
+`PanelHost` returns a *different* element when `panel` is null — makes React unmount the
+container **with the plugin's DOM still inside it**. The plugin's own React root is then
+holding detached nodes, and its teardown throws the same `NotFoundError`. Rendering the
+container unconditionally and toggling `hidden` costs nothing and removes the whole class of
+bug. See §12 for the other half of this fix, in the host.
 
 **The `.catch` is invariant 7's other half.** The `PanelErrorBoundary` inside `definePanel`
 catches *render* errors in React plugins. It cannot catch a `mount` that throws before any
@@ -789,7 +877,8 @@ Note it returns the unsubscribe directly — that's why preload returns one.
 }
 ```
 
-`plugins/hello/src/index.ts`:
+`plugins/hello/src/index.tsx` — **`.tsx`, not `.ts`**. The file contains JSX; esbuild would
+cope with either, but `tsc` will not parse JSX in a `.ts` file and the plugin has to typecheck:
 
 ```typescript
 import type { Plugin } from '@workbench/plugin-sdk';
@@ -872,13 +961,25 @@ The feature that decides whether plugin #7 gets written.
 ```typescript
 import chokidar from 'chokidar';
 
-chokidar
-  .watch(path.join(PLUGIN_DEV_DIR, '*/dist/index.js'), { ignoreInitial: true })
-  .on('change', debounce(100, (file) => {
-    const pluginId = pluginIdFromDistPath(file);
-    win.webContents.send('plugin:changed', pluginId);
-  }));
+// chokidar 4+ REMOVED glob support. A pattern like 'plugins/*/dist/index.js'
+// silently watches nothing — no error, no events, and reload just never fires.
+// Watch the resolved dist directories instead; pluginRoots already has them.
+const targets = [...pluginRoots.entries()]
+  .map(([id, root]) => ({ id, dist: path.join(root, 'dist') }));
+
+chokidar.watch(targets.map((t) => t.dist), { ignoreInitial: true, depth: 0 })
+  .on('all', (event, file) => {
+    if (event !== 'add' && event !== 'change') return;
+    if (path.basename(file) !== 'index.js') return;
+    const target = targets.find((t) => file.startsWith(t.dist + path.sep));
+    if (!target) return;
+    debounced(target.id, () => win.webContents.send('plugin:changed', target.id));
+  });
 ```
+
+That glob removal is worth stating plainly because the failure mode is indistinguishable from
+"my watcher isn't wired up": chokidar accepts the string, watches nothing, and reports no
+error.
 
 Note what main is *not* doing: it does not import esbuild and it does not compile anything.
 The watch contexts from Step 8 own that. This matters for two reasons.
@@ -919,6 +1020,35 @@ bump the counter → reactivate → restore panels.** Bumping the counter before
 means the old module's disposers may be looked up against the new module. Reopening before
 reactivation means mounting a panel whose definition no longer exists.
 
+**One more thing the ordering alone does not fix.** Deactivating disposes the panel
+registration, and the obvious disposer clears the active panel when it removes the panel it
+owns. During a reload that is wrong: the panel is coming straight back, and clearing it makes
+the shell re-render with no panel — which is what unmounts the container div and destroys the
+plugin's DOM (§9). Guard it:
+
+```typescript
+// in PluginHost
+private reloading = false;
+
+// in the registerPanel disposer
+if (this.activePanelId === panelId && !this.reloading) this.setActivePanel(undefined);
+
+// in reload()
+this.reloading = true;
+try {
+  await this.deactivate(pluginId);
+  this.reloadCounter += 1;
+  if (wasActive) await this.activate(pluginId);
+} finally {
+  this.reloading = false;
+}
+```
+
+The shell also needs a signal that something changed, because `panelId` is **identical**
+across a reload while the definition behind it is not. A memoised `getPanel(panelId)` lookup
+will happily keep handing back the dead definition forever. Fire a `reload` event, bump a
+revision counter in the shell, and include it in the memo's dependencies.
+
 > **Gate 9 (DoD 4–5):** with the panel open, change the `<h1>` text and save. The panel updates within ~1s, no window flash, no app restart. DevTools console shows exactly one "hello deactivating" and one "hello activating" per save — not two, not zero.
 
 That console check is the real test. Duplicates mean disposal is leaking; zero means you
@@ -944,6 +1074,10 @@ Run all of these before calling M0 done. Each maps to a design property that M1 
 | 10 | `fetch('plugin://hello/%2e%2e%2f%2e%2e%2fetc/passwd')` returns **403** | traversal guard holds |
 | 11 | `fetch('plugin://not-a-plugin/index.js')` returns **404** | unknown plugin ids are rejected |
 
+Checks 10 and 11 use `fetch`, which is governed by **`connect-src`**, not `script-src`. If
+`plugin:` is missing there (§6.4) both come back as a CSP block rather than 403/404, and you
+will spend the afternoon debugging a protocol handler that was correct all along.
+
 Check 10 is percent-encoded on purpose. The obvious version,
 `plugin://hello/../../etc/passwd`, is normalized by the URL parser *before* your handler ever
 sees it — that is what `standard: true` buys — so `pathname` arrives as `/etc/passwd`, the
@@ -968,7 +1102,12 @@ loading at once and a leak is no longer traceable to a single cause.
 | Preload script fails to load | built as ESM | build as CJS, extension `.cjs` |
 | `window.workbenchHost` undefined | preload path wrong, or it threw | check the **main** process console, not DevTools |
 | Reload does nothing | module URL unchanged | confirm `reloadCounter` is in the query string |
+| Reload never fires at all, no error anywhere | chokidar 4+ dropped glob support; the pattern matches nothing | watch resolved `dist` directories (§12) |
 | Reload works, but ~1 save in 20 does nothing | main is watching `src/` and racing its own build | watch `dist/` instead (§12) |
+| `NotFoundError: Failed to execute 'removeChild'` on reload, panel goes blank | teardown of the old panel landed after the new one mounted, or React unmounted the container mid-reload | serialize mount/teardown on a queue **and** keep the container mounted (§9) + the `reloading` guard (§12) |
+| Every test runs twice, failures duplicated at two paths | Vitest is picking up `tsc -b` output as well as source | scope `test.include` to `packages/*/src` (§8.4) |
+| `TS18002: The 'files' list in config file is empty` | solution-style root tsconfig with no references yet | add the first reference (Step 2) — see §4 |
+| `fetch('plugin://…')` blocked, but `import()` works | `plugin:` is in `script-src` but not `connect-src` | §6.4 — it needs to be in three directives |
 | Whole window flashes on plugin save | `dev.mjs` respawning Electron on plugin rebuilds | §11 point 6 — plugin rebuilds must not restart the app |
 | Two panels after each reload | disposal not unwinding | check `rec.disposables` is emptied |
 | Ghost panel after several rapid saves | teardown ran before the async `mount` resolved | chain cleanup off the mount promise (§9) |
@@ -1022,6 +1161,16 @@ exist and none of them forced a change to the shell** — which is the test this
 already says M1 exists to run. A frozen contract should be one that passed something. From
 the 1.0 tag onward, every change to `PluginContext` is a deliberate versioned decision rather
 than a drive-by edit, which is the discipline the whole architecture is betting on.
+
+### Known gaps you are carrying into M1
+
+Both are deliberate, and both are cheaper to know about than to rediscover:
+
+1. **The production CSP is not enforced.** `onHeadersReceived` never fires for `file://`, so
+   the strict policy protects dev and not a packaged build. Fix is an `app://` scheme for the
+   shell — M4 work, but if M1 starts feeling security-relevant, pull it forward.
+2. **Menus are built once at startup.** Editing a manifest's `label` needs an app restart.
+   Acceptable while there is one plugin; revisit when the plugin manager lands at M3.
 
 Then M1: mermaid, image, JSON, in that order — each stresses a different part of the
 contract. Mermaid is pure render and proves the panel API alone. Image forces `ctx.fs` and
