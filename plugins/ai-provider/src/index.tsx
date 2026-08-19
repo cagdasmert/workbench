@@ -1,16 +1,33 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { Content, PanelContext, Plugin, PluginContext } from '@workbench/plugin-sdk';
 import { definePanel } from '@workbench/plugin-sdk/react';
-import { createOpenAiCompatibleProvider, textToMermaid, type AiProvider } from './provider.js';
+import {
+  BACKENDS,
+  DEFAULT_BACKEND,
+  createOpenAiCompatibleProvider,
+  isBackendId,
+  listModels,
+  textToMermaid,
+  type AiProvider,
+  type BackendId,
+} from './provider.js';
 
 const SAMPLE = 'A user opens a file. The shell reads its manifest, activates the '
   + 'matching plugin, mounts its panel, and the plugin renders the file.';
+
+const SETTINGS_KEY = 'backend';
 
 /** Bridges a command invocation to whichever panel instance is mounted. */
 const prompts = {
   listeners: new Set<(text: string) => void>(),
   emit(text: string) { for (const l of this.listeners) l(text); },
   on(l: (text: string) => void) { this.listeners.add(l); return () => { this.listeners.delete(l); }; },
+};
+
+const backendChanges = {
+  listeners: new Set<(b: BackendId) => void>(),
+  emit(b: BackendId) { for (const l of this.listeners) l(b); },
+  on(l: (b: BackendId) => void) { this.listeners.add(l); return () => { this.listeners.delete(l); }; },
 };
 
 function AiPanel({ ctx }: { ctx: PanelContext }) {
@@ -23,12 +40,51 @@ function AiPanel({ ctx }: { ctx: PanelContext }) {
   const [result, setResult] = useState('');
   const [error, setError] = useState<string | null>(null);
 
+  const [backend, setBackend] = useState<BackendId>(DEFAULT_BACKEND);
+  const [model, setModel] = useState('');
+  const [models, setModels] = useState<string[]>([]);
+  const [restored, setRestored] = useState(false);
+
+  // Restore the saved choice before anything can overwrite it — same trap as
+  // json-tools (change log entry 6).
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const saved = await ctx.plugin.storage.get(SETTINGS_KEY);
+      if (cancelled) return;
+      if (typeof saved === 'object' && saved !== null) {
+        const { backend: b, model: m } = saved as { backend?: unknown; model?: unknown };
+        if (isBackendId(b)) setBackend(b);
+        if (typeof m === 'string') setModel(m);
+      }
+      setRestored(true);
+    })();
+    return () => { cancelled = true; };
+  }, [ctx]);
+
+  useEffect(() => {
+    if (!restored) return;
+    void ctx.plugin.storage.set(SETTINGS_KEY, { backend, model });
+  }, [ctx, backend, model, restored]);
+
+  useEffect(() => backendChanges.on(setBackend), []);
+
+  // Ask the server what it actually has loaded.
+  useEffect(() => {
+    let cancelled = false;
+    setModels([]);
+    void listModels(ctx.plugin, backend)
+      .then((ids) => { if (!cancelled) setModels(ids); })
+      .catch(() => undefined);   // offline is not an error until you run something
+    return () => { cancelled = true; };
+  }, [ctx, backend]);
+
   const run = useCallback(async (source: string) => {
     setStatus('running');
     setError(null);
     setResult('');
     try {
-      const provider = createOpenAiCompatibleProvider(ctx.plugin);
+      const provider = createOpenAiCompatibleProvider(ctx.plugin, { backend, model });
       const mermaid = await textToMermaid(provider, source);
       setResult(mermaid);
       // Named no destination — the shell routes it to whoever accepts
@@ -39,7 +95,7 @@ function AiPanel({ ctx }: { ctx: PanelContext }) {
     } finally {
       setStatus('idle');
     }
-  }, [ctx]);
+  }, [ctx, backend, model]);
 
   useEffect(() => prompts.on((incomingText) => {
     setText(incomingText);
@@ -57,8 +113,31 @@ function AiPanel({ ctx }: { ctx: PanelContext }) {
         >
           {status === 'running' ? 'Generating…' : 'Diagram this text'}
         </button>
+        <select
+          style={styles.select}
+          value={backend}
+          onChange={(e) => { setBackend(e.target.value as BackendId); setModel(''); }}
+        >
+          {Object.entries(BACKENDS).map(([id, b]) => (
+            <option key={id} value={id}>{b.label}</option>
+          ))}
+        </select>
+
+        <select
+          style={styles.select}
+          value={model}
+          onChange={(e) => setModel(e.target.value)}
+        >
+          <option value="">{BACKENDS[backend].defaultModel} (default)</option>
+          {models.filter((m) => m !== BACKENDS[backend].defaultModel).map((m) => (
+            <option key={m} value={m}>{m}</option>
+          ))}
+        </select>
+
         <span style={styles.meta}>
-          {status === 'running' ? 'waiting on the model…' : 'localhost:11434 · OpenAI-compatible'}
+          {status === 'running'
+            ? 'waiting on the model…'
+            : `${BACKENDS[backend].endpoint}${models.length > 0 ? ` · ${models.length} models` : ' · offline'}`}
         </span>
       </div>
 
@@ -75,9 +154,7 @@ function AiPanel({ ctx }: { ctx: PanelContext }) {
             <pre style={styles.error}>
               {error}
               {'\n\n'}
-              Is a model server running? Try:{'\n'}
-              {'  ollama serve'}{'\n'}
-              {'  ollama pull llama3.2'}
+              {BACKENDS[backend].hint}
             </pre>
           )}
           {error === null && result === '' && (
@@ -118,7 +195,24 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'inherit',
     cursor: 'pointer',
   },
-  meta: { marginLeft: 'auto', color: 'var(--chrome-muted, #71717a)', fontSize: 12 },
+  select: {
+    font: 'inherit',
+    fontSize: 12,
+    padding: '3px 6px',
+    borderRadius: 5,
+    border: '1px solid var(--chrome-border, #d4d4d8)',
+    background: 'var(--workspace-bg, #fff)',
+    color: 'inherit',
+    maxWidth: 200,
+  },
+  meta: {
+    marginLeft: 'auto',
+    color: 'var(--chrome-muted, #71717a)',
+    fontSize: 12,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
   split: {
     flex: 1,
     display: 'grid',
@@ -152,6 +246,17 @@ export const plugin: Plugin = {
     ctx.log.info('ai-provider activating');
     ctx.registerPanel('ai.main', definePanel(AiPanel));
     ctx.registerCommand('ai.open', () => ctx.workspace.openPanel('ai.main'));
+
+    ctx.registerCommand('ai.setBackend', async (...args: unknown[]) => {
+      const next = args[0];
+      if (!isBackendId(next)) {
+        await ctx.ui.notify(`Unknown backend: ${String(next)}`, 'warn');
+        return;
+      }
+      await ctx.storage.set(SETTINGS_KEY, { backend: next, model: '' });
+      backendChanges.emit(next);
+      await ctx.workspace.openPanel('ai.main');
+    });
 
     ctx.registerCommand('ai.textToMermaid', async (...args: unknown[]) => {
       const text = typeof args[0] === 'string' ? args[0] : '';

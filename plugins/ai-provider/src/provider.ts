@@ -44,8 +44,33 @@ export interface Capabilities {
   streaming: boolean;
 }
 
-const DEFAULT_ENDPOINT = 'http://localhost:11434/v1';
-const DEFAULT_MODEL = 'llama3.2';
+/**
+ * Known local servers. Both speak the OpenAI chat-completions API, so the only
+ * difference is an endpoint and a default model — adding a third (vLLM, llama.cpp,
+ * a cloud endpoint) is a row here, not code.
+ */
+export const BACKENDS = {
+  lmstudio: {
+    label: 'LM Studio',
+    endpoint: 'http://localhost:1234/v1',
+    defaultModel: 'liquid/lfm2.5-1.2b',
+    hint: 'Start the server from LM Studio → Developer → Start Server.',
+  },
+  ollama: {
+    label: 'Ollama',
+    endpoint: 'http://localhost:11434/v1',
+    defaultModel: 'llama3.2',
+    hint: 'Run `ollama serve`, then `ollama pull llama3.2`.',
+  },
+} as const;
+
+export type BackendId = keyof typeof BACKENDS;
+
+export const DEFAULT_BACKEND: BackendId = 'lmstudio';
+
+export function isBackendId(v: unknown): v is BackendId {
+  return typeof v === 'string' && v in BACKENDS;
+}
 
 interface ChatChoice { message?: { content?: unknown } }
 interface ChatResponse { choices?: ChatChoice[]; model?: unknown; error?: { message?: unknown } }
@@ -61,10 +86,13 @@ interface ChatResponse { choices?: ChatChoice[]; model?: unknown; error?: { mess
  */
 export function createOpenAiCompatibleProvider(
   ctx: PluginContext,
-  options: { endpoint?: string; model?: string } = {},
+  options: { backend?: BackendId; model?: string } = {},
 ): AiProvider {
-  const endpoint = options.endpoint ?? DEFAULT_ENDPOINT;
-  const model = options.model ?? DEFAULT_MODEL;
+  const backend = BACKENDS[options.backend ?? DEFAULT_BACKEND];
+  const endpoint = backend.endpoint;
+  const model = options.model !== undefined && options.model !== ''
+    ? options.model
+    : backend.defaultModel;
 
   return {
     id: `openai-compatible:${endpoint}`,
@@ -119,6 +147,19 @@ export function createOpenAiCompatibleProvider(
       };
     },
   };
+}
+
+/** `/v1/models` is part of the OpenAI-compatible surface both servers implement. */
+export async function listModels(ctx: PluginContext, backend: BackendId): Promise<string[]> {
+  const res = await ctx.net.fetch(`${BACKENDS[backend].endpoint}/models`, { timeoutMs: 5_000 });
+  if (!res.ok) throw new Error(`${BACKENDS[backend].label} returned HTTP ${res.status}`);
+  const parsed: unknown = JSON.parse(res.body);
+  const data = (parsed as { data?: unknown }).data;
+  if (!Array.isArray(data)) return [];
+  return data
+    .map((m) => (m as { id?: unknown }).id)
+    .filter((id): id is string => typeof id === 'string')
+    .sort();
 }
 
 const MERMAID_SYSTEM = `You convert prose into a single Mermaid diagram.

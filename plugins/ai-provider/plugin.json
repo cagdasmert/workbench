@@ -4,26 +4,91 @@
   "version": "1.0.0",
   "apiVersion": "1.0",
   "main": "./dist/index.js",
-  "activationEvents": ["onCommand:ai.open"],
+  "activationEvents": [
+    "onCommand:ai.open"
+  ],
   "contributes": {
-    "panels":   [{ "id": "ai.main", "title": "AI" }],
-    "menu":     [{ "command": "ai.open", "label": "AI", "group": "tools" }],
+    "panels": [
+      {
+        "id": "ai.main",
+        "title": "AI"
+      }
+    ],
+    "menu": [
+      {
+        "command": "ai.open",
+        "label": "AI",
+        "group": "tools"
+      }
+    ],
     "commands": [
-      { "id": "ai.open", "title": "Open AI Panel" },
+      {
+        "id": "ai.open",
+        "title": "Open AI Panel"
+      },
       {
         "id": "ai.textToMermaid",
         "title": "Diagram This Text",
         "args": {
           "type": "object",
           "properties": {
-            "text": { "type": "string", "description": "Prose to turn into a mermaid diagram" }
+            "text": {
+              "type": "string",
+              "description": "Prose to turn into a mermaid diagram"
+            }
           },
-          "required": ["text"]
+          "required": [
+            "text"
+          ]
+        }
+      },
+      {
+        "id": "ai.setBackend",
+        "title": "Set AI Backend",
+        "args": {
+          "type": "object",
+          "properties": {
+            "backend": {
+              "type": "string",
+              "enum": [
+                "lmstudio",
+                "ollama"
+              ],
+              "description": "Which local server to use",
+              "default": "lmstudio"
+            }
+          },
+          "required": [
+            "backend"
+          ]
         }
       }
     ],
-    "accepts": ["text/plain"],
-    "emits":   ["text/vnd.mermaid"]
+    "accepts": [
+      "text/plain"
+    ],
+    "emits": [
+      "text/vnd.mermaid"
+    ],
+    "settings": {
+      "backend": {
+        "type": "string",
+        "enum": [
+          "lmstudio",
+          "ollama"
+        ],
+        "default": "lmstudio",
+        "description": "Which OpenAI-compatible server to talk to"
+      },
+      "model": {
+        "type": "string",
+        "default": "",
+        "description": "Model id; empty uses the backend's default"
+      }
+    }
   },
-  "permissions": ["net:fetch:localhost:11434"]
+  "permissions": [
+    "net:fetch:localhost:1234",
+    "net:fetch:localhost:11434"
+  ]
 }

@@ -399,6 +399,40 @@ one-shot completions. Same discipline as `fs.writeFile` and `storage.delete`.
 **Verified:** emitting `text/vnd.mermaid` took `mermaid-viewer` from `discovered` to `active`
 with the diagram rendered — nodes `AI`, `Bus`, `Viewer`. Neither plugin references the other.
 
-**Not verified: an actual model completion.** No Ollama on this machine. The HTTP client,
-prompt, and fence-stripping are untested against a live model — everything up to the socket
-works, and the failure path degrades to a readable message with no error boundary triggered.
+**Verified end to end against a live model** (LM Studio, `liquid/lfm2.5-1.2b`): prose →
+completion → `stripFences` → `bus.emit('text/vnd.mermaid')` → `mermaid-viewer` from
+`discovered` to `active` with the diagram rendered — nodes `User Opens File`,
+`Shell Reads Manifest`, `Activates Matching Plugin`, `Mounts Panel`, `Plugin Renders File`.
+Zero renderer errors, no error boundary triggered.
+
+`stripFences` earned its place immediately: the model wrapped its output in a ```mermaid fence
+on the first try despite the system prompt saying not to.
+
+---
+
+## 13 · Two local backends, and neither is hardcoded
+
+**Feature:** ai-provider · **Verdict:** plugin-internal — no contract change
+
+LM Studio joined Ollama as a target, and became the default. Both speak the OpenAI
+chat-completions API, so the difference is one row in a `BACKENDS` table — an endpoint, a
+default model, and a hint for when the server is down. A third (vLLM, llama.cpp, a cloud
+endpoint) is data, not code.
+
+**Nothing about this reached the shell.** The manifest declares both hosts —
+`net:fetch:localhost:1234` and `net:fetch:localhost:11434` — and the broker's allowlist is
+built from that. Adding a backend means editing one plugin's manifest and one table; the shell,
+the SDK, and the other four plugins are untouched. That is the property the whole contract
+exists for, and it is the first time a *configuration* change has been tested against it rather
+than a capability change.
+
+The model list comes from the backend's own `/v1/models`, so the picker shows what is actually
+loaded rather than a hardcoded guess — verified showing 6 models from LM Studio.
+
+The selection persists through `ctx.storage`, which meant hitting the async-restore trap from
+entry 6 a second time, in a different plugin. That is now twice; it belongs in the plugin
+template rather than in each plugin's memory.
+
+`contributes.settings` is declared for `backend` and `model` so the M3 settings UI can render
+them without this plugin needing changes — the same forward-compatible move that made the
+content bus free in entry 10.
