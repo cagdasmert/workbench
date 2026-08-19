@@ -852,3 +852,39 @@ while ⌘K still does with focus in the same field.
 This is the second time the window-level dispatcher has needed a guard (entry 19 was the other).
 A global keyboard listener in an app that also contains text fields is inherently a place where
 "who owns this keystroke" has to be answered explicitly, every time.
+
+---
+
+## 28 · mermaid draws its own error over your whole app
+
+**Feature:** mermaid error reporting · **Verdict:** plugin defect, three bugs in one report
+
+A user reported "it shows an error but not what the error is", with a screenshot showing
+mermaid's *"Syntax error in text"* bomb graphic sprawled across the window. Three separate
+defects, all in the plugin:
+
+**1. `mermaid.render()` injects its own error graphic into `document.body`.** Not into the
+element you hand it — into the body, outside the panel, over everything, unstyleable and
+undismissable. Confirmed: `bomb: true`, `bombInPanel: false`.
+
+The fix is `mermaid.parse()` first. It throws the identical message with **no DOM side effects
+at all**, so `render()` is only ever called on input already known to be valid. Now
+`bomb: false`. A `purgeStrayMermaidNodes()` sweep removes anything it leaves behind anyway,
+because a library that appends scratch nodes to `body` cannot be trusted to remove them.
+
+**2. The error message was rendered but effectively invisible.** It was placed *after* a
+`flex: 1` textarea, which pins it to the very bottom of a full-height pane — and the bomb was
+covering that exact area. The message had been produced correctly all along:
+`Parse error on line 3 … Expecting 'SOLID_OPEN_ARROW' …`. It now sits **above** the textarea
+with a `syntax error` badge in the pane header, capped at 30% height and scrollable.
+
+**3. Zoomed text was blurry — caused by `will-change: transform`.** Promoting the transformed
+wrapper to its own compositing layer makes the browser rasterise the SVG **once at 1×** and
+then GPU-scale that bitmap, so zooming in magnifies pixels instead of re-rendering vectors.
+Removing it restores crisp text at every zoom level. Smooth dragging is not worth an
+unreadable diagram — and this is the exact opposite of the usual advice about `will-change`,
+which is why it is worth writing down.
+
+The user's own diagram could not be reproduced from the screenshot (the source was scrolled
+past its first lines) and a faithful reconstruction rendered fine. That is precisely why bug 2
+mattered: the app knew what was wrong and had no way to say so.

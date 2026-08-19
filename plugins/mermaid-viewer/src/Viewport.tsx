@@ -143,6 +143,9 @@ const styles: Record<string, React.CSSProperties> = {
     top: 0,
     left: 0,
     transformOrigin: '0 0',
-    willChange: 'transform',
+    // Deliberately NOT `will-change: transform`. Promoting this to its own
+    // compositing layer makes the SVG rasterise once at 1x and then scale that
+    // bitmap, so zooming in produces blurry text instead of re-rendering the
+    // vectors. Smooth drag is not worth an unreadable diagram.
   },
 };

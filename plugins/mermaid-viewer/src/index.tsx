@@ -29,6 +29,20 @@ const themeRequests = {
 /** mermaid.render needs a unique id per call or it reuses cached DOM. */
 let renderSeq = 0;
 
+/**
+ * mermaid measures diagrams by appending a scratch element to document.body,
+ * and does not always remove it — on failure it leaves the error graphic behind
+ * entirely. Anything it left outside this panel is ours to clean up.
+ */
+function purgeStrayMermaidNodes(): void {
+  for (const el of document.querySelectorAll('body > [id^="dmmd-"], body > [id^="mmd-"]')) {
+    el.remove();
+  }
+  for (const el of document.querySelectorAll('body > svg[aria-roledescription="error"]')) {
+    el.remove();
+  }
+}
+
 function MermaidPanel({ ctx }: { ctx: PanelContext }) {
   // Routed here by the shell: ai-provider emits text/vnd.mermaid, this plugin
   // declares it in `accepts`, and neither knows about the other.
@@ -50,20 +64,34 @@ function MermaidPanel({ ctx }: { ctx: PanelContext }) {
   useEffect(() => {
     let cancelled = false;
     const timer = setTimeout(() => {
-      renderSeq += 1;
-      mermaid
-        .render(`mmd-${renderSeq}`, source)
-        .then((result) => {
+      void (async () => {
+        // Validate first. mermaid.render() draws its own "Syntax error in text"
+        // bomb straight into document.body on failure — outside this panel, over
+        // the whole window, and impossible to style or dismiss. parse() throws
+        // the same message with no DOM side effects at all.
+        try {
+          await mermaid.parse(source);
+        } catch (err: unknown) {
+          if (cancelled) return;
+          setError(err instanceof Error ? err.message : String(err));
+          purgeStrayMermaidNodes();
+          return;                       // keep the last good SVG on screen
+        }
+
+        renderSeq += 1;
+        try {
+          const result = await mermaid.render(`mmd-${renderSeq}`, source);
           if (cancelled) return;
           lastSvg = result.svg;
           setSvg(result.svg);
           setError(null);
-        })
-        .catch((err: unknown) => {
+        } catch (err: unknown) {
           if (cancelled) return;
-          // keep the last good SVG on screen; only surface the message
           setError(err instanceof Error ? err.message : String(err));
-        });
+        } finally {
+          purgeStrayMermaidNodes();
+        }
+      })();
     }, 250);
 
     return () => {
@@ -176,7 +204,14 @@ function MermaidPanel({ ctx }: { ctx: PanelContext }) {
   return (
     <div style={styles.root}>
       <div style={styles.pane}>
-        <label style={styles.label} htmlFor="mermaid-source">Source</label>
+        <label style={styles.label} htmlFor="mermaid-source">
+          Source
+          {error !== null && <span style={styles.badge}>syntax error</span>}
+        </label>
+        {/* Above the textarea, not below it: the textarea is flex:1, so an
+            error placed after it sits at the very bottom of a full-height pane
+            where it is easy to miss entirely. */}
+        {error !== null && <pre style={styles.error}>{error}</pre>}
         <textarea
           id="mermaid-source"
           style={styles.textarea}
@@ -184,7 +219,6 @@ function MermaidPanel({ ctx }: { ctx: PanelContext }) {
           spellCheck={false}
           onChange={(e) => setSource(e.target.value)}
         />
-        {error !== null && <pre style={styles.error}>{error}</pre>}
       </div>
       <div style={styles.pane}>
         {toolbar}
@@ -218,7 +252,19 @@ const styles: Record<string, React.CSSProperties> = {
     minWidth: 0,
     background: 'var(--workspace-bg, #fff)',
   },
+  badge: {
+    marginLeft: 8,
+    padding: '1px 6px',
+    borderRadius: 999,
+    fontSize: 10,
+    letterSpacing: 0,
+    textTransform: 'none',
+    color: 'var(--error-fg, #b91c1c)',
+    border: '1px solid currentColor',
+  },
   label: {
+    display: 'flex',
+    alignItems: 'center',
     padding: '6px 10px',
     fontSize: 11,
     textTransform: 'uppercase',
@@ -277,11 +323,14 @@ const styles: Record<string, React.CSSProperties> = {
   error: {
     margin: 0,
     padding: '8px 12px',
+    maxHeight: '30%',
+    overflow: 'auto',
     whiteSpace: 'pre-wrap',
     font: "11px/1.5 'SF Mono', ui-monospace, monospace",
     color: 'var(--error-fg, #b91c1c)',
     background: 'var(--error-bg, #fef2f2)',
-    borderTop: '1px solid currentColor',
+    borderBottom: '1px solid currentColor',
+    flexShrink: 0,
   },
 };
 
