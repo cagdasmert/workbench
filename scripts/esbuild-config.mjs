@@ -8,13 +8,13 @@ export const PLUGIN_DIR = path.join(ROOT, 'plugins');
 const shared = {
   bundle: true,
   target: 'es2022',
-  sourcemap: 'inline',
   logLevel: 'silent',
 };
 
 /** Main is ESM. Electron is external — it is provided by the runtime, not bundled. */
 export const mainOptions = {
   ...shared,
+  sourcemap: 'inline',
   entryPoints: [path.join(ROOT, 'packages/main/src/index.ts')],
   outfile: path.join(ROOT, 'packages/main/dist/index.js'),
   platform: 'node',
@@ -30,6 +30,7 @@ export const mainOptions = {
  */
 export const preloadOptions = {
   ...shared,
+  sourcemap: 'inline',
   entryPoints: [path.join(ROOT, 'packages/preload/src/index.ts')],
   outfile: path.join(ROOT, 'packages/preload/dist/index.cjs'),
   platform: 'node',
@@ -88,6 +89,10 @@ export async function pluginBuildConfigs() {
         outfile: path.join(dir, 'dist', 'index.js'),
         format: 'esm',
         jsx: 'automatic',
+        // Linked, not inline: mermaid inlined is 27 MB and hot reload measured
+        // 2.5 s. Linked keeps index.js at 8.4 MB and the map is only fetched
+        // when DevTools asks for it.
+        sourcemap: 'linked',
       },
     });
   }

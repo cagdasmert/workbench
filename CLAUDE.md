@@ -6,19 +6,34 @@ plugins. Electron + TypeScript + React, npm workspaces.
 **The plugin contract is the product. The features are disposable.** Optimise every decision
 for the contract staying stable, not for shipping a viewer faster.
 
-## Current milestone: M0
+## Current milestone: M1
 
-Deliver exactly this, and nothing more:
+M0 is **done** and tagged `plugin-sdk@0.1` — shell, `hello` plugin, hot reload, all 11
+verification checks in `docs/m0-build-guide.md` §13 passing.
 
-1. `npm run dev` opens a window
-2. macOS menu shows an entry contributed by the `hello` plugin's manifest
-3. Clicking it mounts the plugin's panel
-4. Editing plugin source reloads it in place — no app restart
-5. Reload fully disposes the previous instance (one activate/deactivate pair per save)
+M1 builds three viewers against the SDK, in this order, because each stresses a different
+part of the contract:
 
-**Do not build in M0:** command palette · tabs or splits · settings UI · theming beyond a
-stylesheet · content bus · permission enforcement · real viewers · packaging · session
-restore. If a task seems to need one of these, say so and stop — do not build it.
+1. **mermaid** — pure render. Proves the panel contract alone. Needs **no new host API**.
+2. **image** — forces `ctx.fs` (`readFile`, `pickFile`) and binary payloads through the
+   permission-declared broker. First real IPC round trip.
+3. **json** — large text, heavy interaction, persistent view state. Forces `ctx.storage`.
+
+**Grow the SDK only when the viewer in front of you needs it.** Adding `storage`/`settings`/
+`fs` up front means guessing at the shape; adding them when a real plugin demands them means
+the plugin proves the shape. Version stays `0.x` throughout.
+
+### The M1 deliverable is the log, not just the viewers
+
+Every time you *want* to reach into the shell to make a viewer work, record it in
+`docs/m1-shell-change-log.md` — what you wanted, why, and what you did instead.
+
+**A shell change made to accommodate a viewer is a contract defect.** Stop, fix the contract,
+and only then start the next viewer. An empty log at the end of M1 is what earns the `1.0`
+freeze (decision D8). A non-empty one is the most valuable output of this milestone.
+
+**Do not build in M1:** command palette · tabs or splits · settings UI · content bus ·
+permission enforcement · packaging · session restore. Those are M2–M4.
 
 ## Invariants — never violate without asking
 

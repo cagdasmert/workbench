@@ -1,0 +1,12 @@
+{
+  "name": "@workbench-plugin/mermaid-viewer",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@workbench/plugin-sdk": "*",
+    "mermaid": "^11.17.0",
+    "react": "*",
+    "react-dom": "*"
+  }
+}

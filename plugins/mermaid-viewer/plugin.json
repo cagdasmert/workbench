@@ -1,0 +1,15 @@
+{
+  "id": "mermaid-viewer",
+  "name": "Mermaid Viewer",
+  "version": "1.0.0",
+  "apiVersion": "1.0",
+  "main": "./dist/index.js",
+  "activationEvents": ["onCommand:mermaid.open"],
+  "contributes": {
+    "panels":   [{ "id": "mermaid.main", "title": "Mermaid" }],
+    "menu":     [{ "command": "mermaid.open", "label": "Mermaid Viewer", "group": "viewers" }],
+    "commands": [{ "id": "mermaid.open", "title": "Open Mermaid Viewer" }],
+    "accepts":  ["text/vnd.mermaid", "text/plain"],
+    "emits":    ["image/svg+xml"]
+  }
+}

@@ -18,6 +18,9 @@
     },
     {
       "path": "plugins/hello"
+    },
+    {
+      "path": "plugins/mermaid-viewer"
     }
   ]
 }
