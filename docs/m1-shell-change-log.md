@@ -767,3 +767,41 @@ personal app.
 The bundle is **319 MB**, of which the great majority is Electron itself plus mermaid's 8 MB and
 its sourcemap. Not addressed: sourcemaps ship in `extraResources` because plugin `dist/**` is
 copied wholesale.
+
+---
+
+# Post-M4
+
+## 25 · A real feature that needed nothing from the host
+
+**Feature:** mermaid pan/zoom/fullscreen · **Verdict:** the contract held
+
+Large diagrams were unreadable, so the mermaid viewer gained zoom buttons, drag-to-pan,
+cursor-anchored wheel zoom, fit-to-window, and a fullscreen toggle.
+
+**None of it touched the shell, the SDK, or any other plugin.** That is worth recording
+because "fullscreen" is exactly the kind of request that *looks* like it needs a host API —
+something like `ctx.ui.setFullscreen()` — and doesn't. A panel already owns its DOM subtree
+outright, so `position: fixed; inset: 0` covers the entire window from inside the plugin. The
+shell never learns that a plugin has gone fullscreen, and nothing about the panel contract
+changes.
+
+Had this been implemented as a host API, every future plugin wanting a different presentation
+would have needed another one. The right question was not "what does the shell need to expose"
+but "what does the plugin already own".
+
+Three details worth keeping:
+
+- **Wheel handling is registered natively**, not through React's `onWheel`, because React's
+  wheel listener is passive and cannot `preventDefault()` — without that, the whole window
+  zooms along with the diagram.
+- **Fit measures the SVG's `viewBox`**, not its bounding rect: the rect already includes the
+  current transform, so fitting from it would make the result depend on the zoom it is about
+  to replace.
+- **Escape is captured** (`addEventListener(..., true)`) so leaving fullscreen wins over the
+  shell's own keybinding dispatcher, which is listening on the same window.
+
+Verified: auto-fit to 94% on open, zoom 94% → 118% → 75% via the buttons, a synthetic drag of
+(+120, +80) moving the transform by exactly (+120, +80), fullscreen producing one fixed overlay
+with the source pane gone, and Escape restoring the split view with no fixed elements left
+behind.

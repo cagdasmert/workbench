@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Content, PanelContext, Plugin } from '@workbench/plugin-sdk';
 import { definePanel } from '@workbench/plugin-sdk/react';
 import mermaid from 'mermaid';
+import { Viewport, clamp, IDENTITY, type View } from './Viewport.js';
 
 mermaid.initialize({
   startOnLoad: false,
@@ -39,6 +40,10 @@ function MermaidPanel({ ctx }: { ctx: PanelContext }) {
   const [svg, setSvg] = useState('');
   const [error, setError] = useState<string | null>(null);
 
+  const [view, setView] = useState<View>(IDENTITY);
+  const [fullscreen, setFullscreen] = useState(false);
+  const stageRef = useRef<HTMLDivElement>(null);
+
   const [themeTick, setThemeTick] = useState(0);
   useEffect(() => themeRequests.on(() => setThemeTick((t) => t + 1)), []);
 
@@ -67,6 +72,107 @@ function MermaidPanel({ ctx }: { ctx: PanelContext }) {
     };
   }, [source, themeTick]);
 
+  /**
+   * Scale to fit and centre. Measured from the SVG's viewBox rather than its
+   * bounding rect, because the rect already includes the current transform and
+   * would make fit() depend on the zoom it is about to replace.
+   */
+  const fit = useCallback(() => {
+    const stage = stageRef.current;
+    const svgEl = stage?.querySelector('svg');
+    if (stage === null || svgEl === null || svgEl === undefined) return;
+
+    const stageBox = stage.getBoundingClientRect();
+    const naturalW = svgEl.viewBox.baseVal.width;
+    const naturalH = svgEl.viewBox.baseVal.height;
+    if (naturalW === 0 || naturalH === 0 || stageBox.width === 0) return;
+
+    const zoom = clamp(Math.min(
+      (stageBox.width - 48) / naturalW,
+      (stageBox.height - 48) / naturalH,
+      1,
+    ));
+    setView({
+      zoom,
+      x: (stageBox.width - naturalW * zoom) / 2,
+      y: (stageBox.height - naturalH * zoom) / 2,
+    });
+  }, []);
+
+  // Fit on a new diagram, and again when the surface changes size — a view that
+  // fitted the half-width pane does not fit the fullscreen one.
+  useEffect(() => {
+    if (svg === '') return;
+    const id = requestAnimationFrame(fit);
+    return () => cancelAnimationFrame(id);
+  }, [svg, fullscreen, fit]);
+
+  /** Zoom about the centre of the stage, so the buttons and the wheel agree. */
+  const zoomBy = useCallback((factor: number) => {
+    const stage = stageRef.current;
+    if (stage === null) return;
+    const box = stage.getBoundingClientRect();
+    const cx = box.width / 2;
+    const cy = box.height / 2;
+
+    setView((prev) => {
+      const next = clamp(prev.zoom * factor);
+      const ratio = next / prev.zoom;
+      return { zoom: next, x: cx - (cx - prev.x) * ratio, y: cy - (cy - prev.y) * ratio };
+    });
+  }, []);
+
+  // Escape leaves fullscreen. Captured on the window, so the shell's own
+  // keybinding dispatcher does not see the keystroke first.
+  useEffect(() => {
+    if (!fullscreen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      e.stopPropagation();
+      setFullscreen(false);
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [fullscreen]);
+
+  const toolbar = (
+    <div style={styles.toolbar}>
+      <button type="button" style={styles.button} onClick={() => zoomBy(1 / 1.25)} title="Zoom out">−</button>
+      <span style={styles.zoom}>{Math.round(view.zoom * 100)}%</span>
+      <button type="button" style={styles.button} onClick={() => zoomBy(1.25)} title="Zoom in">+</button>
+      <button type="button" style={styles.button} onClick={fit} title="Fit to window">Fit</button>
+      <button type="button" style={styles.button} onClick={() => setView(IDENTITY)} title="Actual size">1:1</button>
+      <button
+        type="button"
+        style={styles.button}
+        onClick={() => setFullscreen((f) => !f)}
+        title={fullscreen ? 'Exit fullscreen (Esc)' : 'Fullscreen'}
+      >
+        {fullscreen ? '⤡ Exit' : '⤢ Fullscreen'}
+      </button>
+      <span style={styles.hint}>drag to pan · ⌘/ctrl + scroll to zoom</span>
+    </div>
+  );
+
+  const preview = (
+    <div ref={stageRef} style={styles.stage}>
+      <Viewport html={svg} view={view} onView={setView} />
+    </div>
+  );
+
+  if (fullscreen) {
+    // The plugin owns this subtree, so a fixed overlay covers the whole window
+    // without the shell needing to know anything about it.
+    return (
+      <div style={styles.overlay}>
+        {toolbar}
+        {preview}
+        {error !== null && <pre style={styles.error}>{error}</pre>}
+      </div>
+    );
+  }
+
   return (
     <div style={styles.root}>
       <div style={styles.pane}>
@@ -81,12 +187,8 @@ function MermaidPanel({ ctx }: { ctx: PanelContext }) {
         {error !== null && <pre style={styles.error}>{error}</pre>}
       </div>
       <div style={styles.pane}>
-        <label style={styles.label}>Preview</label>
-        <div
-          style={styles.preview}
-          // mermaid sanitises its own output at securityLevel 'strict'
-          dangerouslySetInnerHTML={{ __html: svg }}
-        />
+        {toolbar}
+        {preview}
       </div>
     </div>
   );
@@ -99,6 +201,15 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 1,
     height: '100%',
     background: 'var(--chrome-border, #d4d4d8)',
+    font: '13px/1.5 -apple-system, BlinkMacSystemFont, system-ui, sans-serif',
+  },
+  overlay: {
+    position: 'fixed',
+    inset: 0,
+    zIndex: 200,
+    display: 'flex',
+    flexDirection: 'column',
+    background: 'var(--workspace-bg, #fff)',
     font: '13px/1.5 -apple-system, BlinkMacSystemFont, system-ui, sans-serif',
   },
   pane: {
@@ -115,6 +226,40 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--chrome-muted, #71717a)',
     borderBottom: '1px solid var(--chrome-border, #d4d4d8)',
   },
+  toolbar: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    padding: '5px 8px',
+    borderBottom: '1px solid var(--chrome-border, #d4d4d8)',
+    background: 'var(--chrome-bg, #f4f4f5)',
+  },
+  button: {
+    font: 'inherit',
+    fontSize: 12,
+    minWidth: 28,
+    padding: '2px 9px',
+    borderRadius: 5,
+    border: '1px solid var(--chrome-border, #d4d4d8)',
+    background: 'var(--workspace-bg, #fff)',
+    color: 'inherit',
+    cursor: 'pointer',
+  },
+  zoom: {
+    minWidth: 46,
+    textAlign: 'center',
+    fontSize: 12,
+    color: 'var(--chrome-muted, #71717a)',
+  },
+  hint: {
+    marginLeft: 'auto',
+    fontSize: 11,
+    color: 'var(--chrome-muted, #71717a)',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  stage: { display: 'flex', flex: 1, minHeight: 0 },
   textarea: {
     flex: 1,
     resize: 'none',
@@ -124,13 +269,6 @@ const styles: Record<string, React.CSSProperties> = {
     font: "12px/1.6 'SF Mono', ui-monospace, monospace",
     color: 'inherit',
     background: 'transparent',
-  },
-  preview: {
-    flex: 1,
-    overflow: 'auto',
-    padding: 12,
-    display: 'grid',
-    placeItems: 'center',
   },
   error: {
     margin: 0,
