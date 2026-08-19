@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { Plugin } from '@workbench/plugin-sdk';
+import type { Content, PanelContext, Plugin } from '@workbench/plugin-sdk';
 import { definePanel } from '@workbench/plugin-sdk/react';
 import mermaid from 'mermaid';
 
@@ -28,8 +28,14 @@ const themeRequests = {
 /** mermaid.render needs a unique id per call or it reuses cached DOM. */
 let renderSeq = 0;
 
-function MermaidPanel() {
-  const [source, setSource] = useState(SAMPLE);
+function MermaidPanel({ ctx }: { ctx: PanelContext }) {
+  // Routed here by the shell: ai-provider emits text/vnd.mermaid, this plugin
+  // declares it in `accepts`, and neither knows about the other.
+  const routed = typeof (ctx.payload as Content | undefined)?.data === 'string'
+    ? String((ctx.payload as Content).data)
+    : '';
+
+  const [source, setSource] = useState(routed === '' ? SAMPLE : routed);
   const [svg, setSvg] = useState('');
   const [error, setError] = useState<string | null>(null);
 

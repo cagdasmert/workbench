@@ -1,4 +1,6 @@
-import type { FileFilter, JsonValue, PluginManifest } from '@workbench/plugin-sdk';
+import type {
+  FileFilter, JsonValue, NetRequestInit, NetResponse, PluginManifest,
+} from '@workbench/plugin-sdk';
 
 /**
  * The preload surface. plugin-host speaks to this and nothing else — no Electron
@@ -11,6 +13,7 @@ export interface WorkbenchHostBridge {
   notify(message: string, level?: string): Promise<void>;
   pickFile(filters?: FileFilter[]): Promise<string | undefined>;
   readFile(path: string): Promise<Uint8Array<ArrayBuffer>>;
+  netFetch(pluginId: string, url: string, init?: NetRequestInit): Promise<NetResponse>;
   storageGet(pluginId: string, key: string): Promise<JsonValue | undefined>;
   storageSet(pluginId: string, key: string, value: JsonValue): Promise<void>;
   onCommand(cb: (commandId: string) => void): () => void;

@@ -479,6 +479,21 @@ export class PluginHost {
         set: async (key, value) => { await this.bridge.storageSet(pluginId, key, value); },
       },
 
+      net: {
+        fetch: async (url, init) => {
+          try {
+            return await this.bridge.netFetch(pluginId, url, init);
+          } catch (err) {
+            // Electron prefixes every rejected invoke with
+            // "Error invoking remote method 'x': Error: ..." — that wrapper is an
+            // implementation detail of the bridge, not something a plugin should
+            // have to parse or display.
+            const raw = err instanceof Error ? err.message : String(err);
+            throw new Error(raw.replace(/^Error invoking remote method '[^']*':\s*(Error:\s*)?/, ''));
+          }
+        },
+      },
+
       bus: {
         emit: async (content) => { await this.emit(content, pluginId); },
         onReceive: (handler) => {

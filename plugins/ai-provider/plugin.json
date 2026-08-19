@@ -1,0 +1,29 @@
+{
+  "id": "ai-provider",
+  "name": "AI",
+  "version": "1.0.0",
+  "apiVersion": "1.0",
+  "main": "./dist/index.js",
+  "activationEvents": ["onCommand:ai.open"],
+  "contributes": {
+    "panels":   [{ "id": "ai.main", "title": "AI" }],
+    "menu":     [{ "command": "ai.open", "label": "AI", "group": "tools" }],
+    "commands": [
+      { "id": "ai.open", "title": "Open AI Panel" },
+      {
+        "id": "ai.textToMermaid",
+        "title": "Diagram This Text",
+        "args": {
+          "type": "object",
+          "properties": {
+            "text": { "type": "string", "description": "Prose to turn into a mermaid diagram" }
+          },
+          "required": ["text"]
+        }
+      }
+    ],
+    "accepts": ["text/plain"],
+    "emits":   ["text/vnd.mermaid"]
+  },
+  "permissions": ["net:fetch:localhost:11434"]
+}

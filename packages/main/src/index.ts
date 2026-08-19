@@ -8,6 +8,7 @@ import { buildMenu } from './menu.js';
 import { watchPluginBuilds } from './watcher.js';
 import { registerFsBroker } from './fs-broker.js';
 import { registerStorageBroker } from './storage-broker.js';
+import { registerNetBroker, loadNetPermissions } from './net-broker.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -78,6 +79,8 @@ app.whenReady().then(async () => {
   );
   for (const m of manifests) console.log('[plugins] manifest:', JSON.stringify(m));
 
+  loadNetPermissions(manifests);
+
   ipcMain.handle('plugins:list', () => manifests);
 
   // Treat everything arriving from the renderer as untrusted — it is a local
@@ -90,6 +93,7 @@ app.whenReady().then(async () => {
   const win = createWindow();
   registerFsBroker(win);
   registerStorageBroker();
+  registerNetBroker();
   buildMenu(manifests, win);
 
   // Dev only: the orchestrator builds, main just notices the output changed.

@@ -110,6 +110,19 @@ export interface PluginContext {
   };
 
   /**
+   * Brokered HTTP, proxied through main. Plugins cannot `fetch` directly: the
+   * renderer's CSP would have to name every endpoint any plugin might ever use,
+   * which puts plugin configuration in the shell.
+   *
+   * A request is allowed only if the manifest declares `net:fetch:<host>` (or
+   * `net:fetch:*`) for that host. The declaration is the grant, exactly as the
+   * file dialog is the grant for `fs`.
+   */
+  net: {
+    fetch(url: string, init?: NetRequestInit): Promise<NetResponse>;
+  };
+
+  /**
    * Typed content routing. The shell builds a table from the `accepts`/`emits`
    * declared in every manifest, so it knows which plugins could receive a
    * payload without loading any of them.
@@ -130,6 +143,22 @@ export interface PluginContext {
   };
 
   log: Logger;
+}
+
+// ─── brokered network ────────────────────────────────────────
+export interface NetRequestInit {
+  method?: 'GET' | 'POST';
+  headers?: Record<string, string>;
+  /** Already-serialized body. Objects are the plugin's job to stringify. */
+  body?: string;
+  timeoutMs?: number;
+}
+
+export interface NetResponse {
+  status: number;
+  ok: boolean;
+  headers: Record<string, string>;
+  body: string;
 }
 
 // ─── content bus ─────────────────────────────────────────────

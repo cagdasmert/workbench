@@ -22,6 +22,7 @@ const bridge: WorkbenchHostBridge = {
   notify: async () => undefined,
   pickFile: async () => undefined,
   readFile: async () => new Uint8Array(),
+  netFetch: async () => ({ status: 200, ok: true, headers: {}, body: '' }),
   storageGet: async () => undefined,
   storageSet: async () => undefined,
   onCommand: () => () => undefined,

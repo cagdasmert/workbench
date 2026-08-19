@@ -17,6 +17,9 @@ contextBridge.exposeInMainWorld('workbenchHost', {
   pickFile: (filters?: unknown) => ipcRenderer.invoke('fs:pickFile', filters),
   readFile: (path: string) => ipcRenderer.invoke('fs:readFile', path),
 
+  netFetch: (pluginId: string, url: string, init?: unknown) =>
+    ipcRenderer.invoke('net:fetch', pluginId, url, init),
+
   storageGet: (pluginId: string, key: string) =>
     ipcRenderer.invoke('storage:get', pluginId, key),
   storageSet: (pluginId: string, key: string, value: unknown) =>

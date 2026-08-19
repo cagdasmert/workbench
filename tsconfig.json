@@ -27,6 +27,9 @@
     },
     {
       "path": "plugins/json-tools"
+    },
+    {
+      "path": "plugins/ai-provider"
     }
   ]
 }

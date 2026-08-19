@@ -336,3 +336,69 @@ Three routing rules also verified live: exactly one match routes directly; sever
 (`No plugin accepts video/mp4`). A payload is never routed back to its emitter.
 
 That is decision D3 paying off — the field cost one line per manifest and was worth it.
+
+---
+
+## 11 · AI needed network, and CSP is the wrong place to grant it
+
+**Feature:** ai-provider · **Verdict:** SDK 1.2 → 1.3, additive
+
+The plugin has to reach an OpenAI-compatible endpoint on `localhost:11434`. The renderer's
+`connect-src` does not allow it, and the tempting fix — adding the host to the shell's CSP — is
+a contract defect: it puts **one plugin's configuration in the shell**, and every future plugin
+wanting a different endpoint would need the shell edited again. That is precisely the shell
+change M1 taught us to refuse.
+
+So network joins `fs` and `storage` as a brokered capability: `ctx.net.fetch`, proxied to main,
+with the host allowlist built from the manifest's declared `net:fetch:<host>` permissions —
+the grammar architecture §9 already specified. **The declaration is the grant.**
+
+Verified live, all four:
+
+| attempt | result |
+|---|---|
+| `ai-provider` → `evil.example` | `denied — may not reach evil.example (declared: localhost:11434)` |
+| `json-tools` → `localhost:11434` | `denied — json-tools declares no net:fetch permission` |
+| `ai-provider` → `file:///etc/passwd` | `unsupported protocol file:` |
+| `ai-provider` → `localhost:11434` | allowed through to the network layer |
+
+D5 says permissions are declared, not enforced. This is the same narrow exception argued for
+`fs` in entry 2: without it, a brokered fetch is an open proxy handed to the renderer.
+
+Two smaller things fixed on the way. Node's `fetch` reports every transport failure as a bare
+`fetch failed`, so the broker now names the unreachable host. And Electron prefixes every
+rejected `invoke` with `Error invoking remote method 'x':` — a bridge implementation detail
+that plugins should not have to parse, now stripped in the host.
+
+**Contract impact:** additive — `ctx.net`, `NetRequestInit`, `NetResponse`.
+
+---
+
+## 12 · `AiProvider` stays out of the SDK
+
+**Feature:** ai-provider · **Verdict:** the contract worked — no change
+
+`ai-layer-options.md` §4 calls the `AiProvider` interface the load-bearing part of the whole AI
+decision: if every AI-consuming plugin talks only to it, then Ollama-direct, a DSH sidecar, or
+a cloud API are interchangeable. That makes it tempting to put in the SDK where everything can
+see it.
+
+It stays inside `plugins/ai-provider/`. Two constraints from §4, both cheap now and expensive
+later: the moment the **shell** exposes AI, the app stops working offline and every plugin can
+reach a model implicitly; and AI must arrive **through the content bus**, not a special path.
+
+So `ai-provider` is an ordinary plugin — it declares `accepts: ["text/plain"]` and
+`emits: ["text/vnd.mermaid"]`, and reaches other plugins the same way any plugin does. The
+`AgentProvider` extension point for a future DSH sidecar is written down but unimplemented, so
+the seam is visible rather than invented under pressure later.
+
+`stream()` from the §4 sketch is **deliberately absent**: streaming across the IPC broker needs
+an event-channel design, and the backlog's AI features (text→mermaid, explain-this-JSON) are
+one-shot completions. Same discipline as `fs.writeFile` and `storage.delete`.
+
+**Verified:** emitting `text/vnd.mermaid` took `mermaid-viewer` from `discovered` to `active`
+with the diagram rendered — nodes `AI`, `Bus`, `Viewer`. Neither plugin references the other.
+
+**Not verified: an actual model completion.** No Ollama on this machine. The HTTP client,
+prompt, and fence-stripping are untested against a live model — everything up to the socket
+works, and the failure path degrades to a readable message with no error boundary triggered.
