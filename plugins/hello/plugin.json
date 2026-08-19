@@ -1,0 +1,13 @@
+{
+  "id": "hello",
+  "name": "Hello",
+  "version": "1.0.0",
+  "apiVersion": "1.0",
+  "main": "./dist/index.js",
+  "activationEvents": ["onCommand:hello.open"],
+  "contributes": {
+    "panels":   [{ "id": "hello.main", "title": "Hello" }],
+    "menu":     [{ "command": "hello.open", "label": "Hello Panel" }],
+    "commands": [{ "id": "hello.open", "title": "Open Hello Panel" }]
+  }
+}

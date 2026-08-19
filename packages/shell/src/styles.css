@@ -1,0 +1,69 @@
+:root {
+  color-scheme: light dark;
+  --chrome-bg: #f4f4f5;
+  --chrome-fg: #18181b;
+  --chrome-muted: #71717a;
+  --chrome-border: #d4d4d8;
+  --workspace-bg: #ffffff;
+  --error-fg: #b91c1c;
+  --error-bg: #fef2f2;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --chrome-bg: #18181b;
+    --chrome-fg: #fafafa;
+    --chrome-muted: #a1a1aa;
+    --chrome-border: #3f3f46;
+    --workspace-bg: #09090b;
+    --error-fg: #fca5a5;
+    --error-bg: #1f1315;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root { height: 100%; margin: 0; }
+
+body {
+  font: 13px/1.5 -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  color: var(--chrome-fg);
+  background: var(--workspace-bg);
+}
+
+.shell { display: flex; flex-direction: column; height: 100%; }
+
+.shell-chrome {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 8px 14px;
+  background: var(--chrome-bg);
+  border-bottom: 1px solid var(--chrome-border);
+  user-select: none;
+}
+
+.shell-title { font-weight: 600; }
+.shell-status { color: var(--chrome-muted); font-size: 12px; }
+
+.shell-workspace { flex: 1; min-height: 0; overflow: auto; }
+
+.panel-host { height: 100%; }
+
+.panel-empty {
+  display: grid;
+  place-items: center;
+  color: var(--chrome-muted);
+}
+
+.panel-error {
+  margin: 16px;
+  padding: 12px 14px;
+  white-space: pre-wrap;
+  font-family: 'SF Mono', ui-monospace, monospace;
+  font-size: 12px;
+  color: var(--error-fg);
+  background: var(--error-bg);
+  border: 1px solid currentColor;
+  border-radius: 6px;
+}

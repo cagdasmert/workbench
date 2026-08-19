@@ -1,0 +1,33 @@
+{
+  "name": "workbench",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "plugins/*"
+  ],
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "typecheck": "tsc -b",
+    "test": "vitest run",
+    "build:app": "node scripts/build-app.mjs",
+    "build:plugins": "node scripts/build-plugins.mjs",
+    "build:shell": "npm run build -w @workbench/shell"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^6.0.5",
+    "chokidar": "^5.0.0",
+    "electron": "^43.4.1",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.1",
+    "vitest": "^4.1.11"
+  },
+  "dependencies": {
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  }
+}

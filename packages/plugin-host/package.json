@@ -1,0 +1,12 @@
+{
+  "name": "@workbench/plugin-host",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@workbench/plugin-sdk": "*"
+  },
+  "exports": {
+    ".": "./dist/index.js"
+  }
+}

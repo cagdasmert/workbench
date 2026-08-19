@@ -1,0 +1,23 @@
+{
+  "files": [],
+  "references": [
+    {
+      "path": "packages/plugin-sdk"
+    },
+    {
+      "path": "packages/main"
+    },
+    {
+      "path": "packages/preload"
+    },
+    {
+      "path": "packages/plugin-host"
+    },
+    {
+      "path": "packages/shell"
+    },
+    {
+      "path": "plugins/hello"
+    }
+  ]
+}

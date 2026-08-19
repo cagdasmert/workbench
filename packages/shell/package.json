@@ -1,0 +1,16 @@
+{
+  "name": "@workbench/shell",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite"
+  },
+  "dependencies": {
+    "@workbench/plugin-host": "*",
+    "@workbench/plugin-sdk": "*",
+    "react": "*",
+    "react-dom": "*"
+  }
+}
