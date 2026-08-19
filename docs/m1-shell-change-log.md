@@ -178,3 +178,50 @@ in the plugin scaffolding template (`tools/create-plugin`, still unbuilt) rather
 rediscovered per plugin. Logged so that template starts life with the right shape.
 
 **Contract impact:** none.
+
+---
+
+## Verdict — M1 closed, `plugin-sdk` frozen at 1.0
+
+Measured against the M0 commit (`ab237a2`):
+
+| package | change since M0 |
+|---|---|
+| **`packages/shell`** | **unchanged** |
+| `packages/plugin-sdk` | +47 / −1 — `fs`, `storage`, `JsonValue`, `FileFilter` |
+| `packages/plugin-host` | +88 / −1 — proxy the two new capabilities |
+| `packages/preload` | +8 — four new bridge methods |
+| `packages/main` | +178 / −3 — fs broker, storage broker, MIME table, CSP |
+
+**The shell was never touched.** Three viewers — a diagram renderer, a binary file reader, and
+an interactive tree with persistent view state — and the renderer needed nothing. That was the
+test D8 set, and it passed.
+
+The SDK diff touches **no line** of `PanelDefinition`, `mount`, `PanelTeardown`, `Plugin`,
+`Disposable`, `registerPanel`, `registerCommand`, or `PluginManifest`. Everything added was
+new surface alongside the existing contract, never a change to it.
+
+**Six entries, no contract defects:**
+
+| # | Entry | Verdict |
+|---|---|---|
+| 1 | `plugin://` served every file as `text/javascript` | host defect, pre-existing |
+| 2 | `ctx.fs` scope | planned growth |
+| 3 | `readFile` returned an unusable `Uint8Array` | pre-release narrowing |
+| 4 | CSP missing `blob:` | host defect |
+| 5 | `ctx.storage` scope | planned growth |
+| 6 | async storage races a naive plugin | plugin adapted; host correct |
+
+Entries 1 and 4 were latent host bugs the first real plugins surfaced — `hello` shipped one
+`.js` file and loaded no content, so neither could have appeared in M0. Entry 3 is the clearest
+argument for building viewers before freezing: a bare `Uint8Array` is `ArrayBufferLike`, which
+`Blob` rejects, so every binary plugin would have carried a cast or a defensive copy forever.
+It was invisible until something consumed the API.
+
+**Two things left deliberately open**, both cheap to widen and expensive to narrow:
+
+- `fs.readFile` serves only `pickFile`-granted paths from this session. A config reader or
+  folder watcher needs a wider scope — that should arrive as a *new* permission string and a
+  decision-log entry, not by loosening this one.
+- `fs.writeFile`, `fs.watch`, and `storage.delete` do not exist. Adding methods post-1.0 is a
+  minor bump, so waiting for a caller costs nothing.

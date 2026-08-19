@@ -113,14 +113,16 @@ These are load-bearing, not style preferences:
 | | Deliverable | Status |
 |---|---|---|
 | **M0** | Shell + `hello` plugin + hot reload | ✅ done |
-| **M1** | Plugin API v1 + mermaid / image / JSON viewers | next |
+| **M1** | Plugin API v1 + mermaid / image / JSON viewers | ✅ done — SDK frozen at `1.0` |
 | **M2** | Command palette + typed content bus | |
 | **M3** | Settings, keybindings, plugin manager | |
 | **M4** | Packaging, ad-hoc signing, session restore | |
 
-**M1 is the real test.** If any of the three viewers forces a change to the shell, the contract
-is wrong and gets fixed before M2. The SDK freezes at `1.0` only once all three are built and
-that hasn't happened.
+**M1 was the real test, and the contract held.** All three viewers were built without a single
+change to `packages/shell`, so `@workbench/plugin-sdk` is frozen at `1.0`. The SDK gained `fs`
+and `storage` — both additive; no line of the panel API, lifecycle, or manifest schema changed.
+The six things that came up along the way are in the
+[M1 shell change log](docs/m1-shell-change-log.md), none of them a contract defect.
 
 ### Known gaps
 
@@ -135,6 +137,7 @@ that hasn't happened.
 | [Architecture](docs/architecture.md) | Process model, plugin contract, content bus, decision log |
 | [M0 build guide](docs/m0-build-guide.md) | Step-by-step with gates — revised after actually building it |
 | [Project overview](docs/README.md) | Plugin backlog and priorities |
+| [M1 shell change log](docs/m1-shell-change-log.md) | What each viewer wanted from the shell, and what happened instead |
 | [AI layer options](docs/ai-layer-options.md) | Why neither DeepSeek Harness nor Cordis was adopted |
 | [CLAUDE.md](CLAUDE.md) | Agent instructions for this repo |
 

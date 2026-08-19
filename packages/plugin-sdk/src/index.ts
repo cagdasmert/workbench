@@ -1,3 +1,14 @@
+/**
+ * @workbench/plugin-sdk 1.0 — FROZEN.
+ *
+ * Earned, not declared: mermaid, image, and JSON viewers were all built against
+ * this surface without a single change to `packages/shell` (decision D8).
+ *
+ * From here, changes to `PluginContext` are versioned decisions, not drive-by
+ * edits. Additive methods are a minor bump; changing or removing anything below
+ * is a major bump plus a migration note in the architecture decision log.
+ */
+
 // ─── lifecycle ───────────────────────────────────────────────
 export interface Disposable {
   dispose(): void | Promise<void>;
