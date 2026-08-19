@@ -5,6 +5,7 @@ import { pluginSearchPaths, shellDist, preloadScript } from './paths.js';
 import { registerPluginScheme, handlePluginProtocol } from './protocol.js';
 import { registerAppScheme, handleAppProtocol, APP_ORIGIN } from './app-protocol.js';
 import { buildMenu } from './menu.js';
+import { installContextMenu } from './context-menu.js';
 import { watchPluginBuilds } from './watcher.js';
 import { registerFsBroker } from './fs-broker.js';
 import { registerStorageBroker } from './storage-broker.js';
@@ -115,6 +116,7 @@ app.whenReady().then(async () => {
 
   const win = createWindow();
   registerFsBroker(win);
+  installContextMenu(win);
   registerPluginStateBroker(win, () => buildMenu(manifests, win));
   registerStorageBroker();
   registerNetBroker();

@@ -805,3 +805,50 @@ Verified: auto-fit to 94% on open, zoom 94% → 118% → 75% via the buttons, a 
 (+120, +80) moving the transform by exactly (+120, +80), fullscreen producing one fixed overlay
 with the source pane gone, and Escape restoring the split view with no fixed elements left
 behind.
+
+---
+
+## 26 · A custom application menu silently unbinds every editing shortcut
+
+**Feature:** text editing · **Verdict:** CONTRACT GAP — shell defect, present since M0
+
+⌘A, ⌘C, ⌘V, ⌘X and ⌘Z did nothing anywhere in the app, in any text field, in any plugin.
+
+On macOS the standard editing commands are not built into the web view — they are routed
+through the **Edit menu's roles**. Electron's default menu includes one; the moment you call
+`Menu.setApplicationMenu()` with a custom template you replace it, and omitting
+`{ role: 'editMenu' }` unbinds all of them at once.
+
+The M0 build guide's menu template is `appMenu · Plugins · viewMenu · windowMenu`, so this has
+been broken since the first commit and survived four milestones. It was invisible because
+nothing in M0–M4 involved typing into a field and then copying out of it — the JSON and mermaid
+panels were only ever typed into, never copied from.
+
+**Fix:** `{ role: 'editMenu' }` in the template, plus a right-click context menu, which Electron
+also does not provide by default. Both are shell services (§6) rather than plugin concerns: a
+plugin should not have to implement copy and paste, and every text field in every plugin gets
+them at once.
+
+Verified with the real menu commands rather than synthetic events: select-all reported 0–179 of
+179 characters, copy put the source on the system clipboard, and paste replaced it and
+re-rendered the pasted diagram.
+
+## 27 · A window-level key dispatcher will eat your typing
+
+**Feature:** text editing · **Verdict:** latent bug found while fixing 26
+
+The keybinding dispatcher (entry 18) listens on `window`, so it sees every keystroke including
+those aimed at a focused `<textarea>`. Today every binding carries a modifier, so nothing broke
+— but the first plugin to declare a bare letter as a chord would make every text field in the
+app unusable, and the cause would be entirely non-obvious from inside that plugin.
+
+The dispatcher now ignores unmodified keys when focus is in an `<input>`, `<textarea>`, or a
+`contentEditable` element. Modified chords still get through, which is what keeps ⌘K working
+while typing.
+
+Verified both directions: pressing `k` in the source textarea does **not** open the palette,
+while ⌘K still does with focus in the same field.
+
+This is the second time the window-level dispatcher has needed a guard (entry 19 was the other).
+A global keyboard listener in an app that also contains text fields is inherently a place where
+"who owns this keystroke" has to be answered explicitly, every time.

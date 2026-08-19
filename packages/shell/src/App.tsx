@@ -144,6 +144,15 @@ export function App() {
 
       const chord = chordFromEvent(e);
       if (chord === null) return;
+
+      // A text field owns unmodified keys, or a plugin binding a bare letter
+      // would make every textarea in the app unusable. Modified chords still
+      // reach commands, which is what keeps ⌘K working while typing.
+      const editing = target instanceof HTMLElement
+        && (target.isContentEditable
+          || target instanceof HTMLInputElement
+          || target instanceof HTMLTextAreaElement);
+      if (editing && !e.metaKey && !e.ctrlKey && !e.altKey) return;
       const command = map.get(chord);
       if (command === undefined) return;
       e.preventDefault();

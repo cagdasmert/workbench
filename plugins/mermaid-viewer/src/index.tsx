@@ -269,6 +269,10 @@ const styles: Record<string, React.CSSProperties> = {
     font: "12px/1.6 'SF Mono', ui-monospace, monospace",
     color: 'inherit',
     background: 'transparent',
+    // explicit: the preview pane sets user-select:none, and this makes the
+    // source pane's behaviour independent of anything an ancestor does
+    userSelect: 'text',
+    cursor: 'text',
   },
   error: {
     margin: 0,

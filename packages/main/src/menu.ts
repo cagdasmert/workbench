@@ -41,6 +41,10 @@ export function buildMenu(manifests: PluginManifest[], win: BrowserWindow): void
         },
       ],
     },
+    // Without this, ⌘A / ⌘C / ⌘V / ⌘X / ⌘Z do nothing anywhere in the app:
+    // macOS routes the standard editing commands through the Edit menu's roles,
+    // and a custom application menu that omits it silently unbinds them all.
+    { role: 'editMenu' },
     { label: 'Plugins', submenu: pluginsSubmenu },
     { role: 'viewMenu' },
     { role: 'windowMenu' },
