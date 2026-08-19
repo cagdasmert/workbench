@@ -65,7 +65,7 @@ export interface PluginManifest {
      *  so plugin.json files written during M1 never need revising. */
     accepts?: string[];
     emits?: string[];
-    settings?: Record<string, unknown>;
+    settings?: SettingsSchema;
   };
   permissions?: string[];
 }
@@ -107,6 +107,17 @@ export interface PluginContext {
   storage: {
     get<T extends JsonValue>(key: string): Promise<T | undefined>;
     set<T extends JsonValue>(key: string, value: T): Promise<void>;
+  };
+
+  /**
+   * Values for whatever this plugin declared in `contributes.settings`, with
+   * declared defaults applied. Read-only by design: the shell owns the settings
+   * UI and is the only writer, so there is exactly one path a value can change
+   * by and `onChange` can be trusted.
+   */
+  settings: {
+    get<T extends JsonValue>(key: string): Promise<T | undefined>;
+    onChange(cb: (key: string, value: JsonValue) => void): Disposable;
   };
 
   /**
@@ -197,16 +208,25 @@ export type ContentHandler = (content: Content) => ContentResult | Promise<Conte
  * arguments, prompt for them in the palette, and hand them to a model later.
  * It is not a validator; the shell checks `required` and `type` and no more.
  */
+export interface PropertySchema {
+  type: 'string' | 'number' | 'boolean';
+  description?: string;
+  enum?: string[];
+  default?: string | number | boolean;
+}
+
 export interface CommandArgSchema {
   type: 'object';
-  properties: Record<string, {
-    type: 'string' | 'number' | 'boolean';
-    description?: string;
-    enum?: string[];
-    default?: string | number | boolean;
-  }>;
+  properties: Record<string, PropertySchema>;
   required?: string[];
 }
+
+/**
+ * What a plugin declares in `contributes.settings`. The shell renders the form
+ * from this — a plugin never builds one, and never writes a setting: the shell
+ * is the single writer, plugins read and observe.
+ */
+export type SettingsSchema = Record<string, PropertySchema>;
 
 /** Anything that survives a JSON round trip, and nothing that doesn't. */
 export type JsonValue =

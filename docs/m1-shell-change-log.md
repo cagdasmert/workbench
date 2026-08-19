@@ -436,3 +436,67 @@ template rather than in each plugin's memory.
 `contributes.settings` is declared for `backend` and `model` so the M3 settings UI can render
 them without this plugin needing changes — the same forward-compatible move that made the
 content bus free in entry 10.
+
+---
+
+# M3
+
+## 14 · Settings are read-only to plugins
+
+**Feature:** settings UI · **Verdict:** SDK 1.3 → 1.4, additive
+
+`ctx.settings` has `get` and `onChange` but **no `set`**, matching architecture §4.3. That is
+not an oversight to fix later.
+
+The shell owns the settings form and is the only writer. One writer means `onChange` can be
+trusted: a value changes by exactly one path, so there is no race between a plugin writing its
+own setting and the sheet writing the same key. `ai-provider` previously persisted its backend
+choice through `ctx.storage`; it now reads `ctx.settings` and its in-panel picker is explicitly
+session-scoped, with the sheet as the persistent path.
+
+**Validation lives in main, not the form.** A renderer-side check is a UI affordance, not a
+guarantee — the bridge is reachable directly. Verified: a value outside the declared `enum`, a
+wrong type, and an undeclared key are all rejected at the broker.
+
+Stored values are also re-checked against the schema **on read**. If a plugin update narrows an
+enum or changes a type, the stale stored value is discarded in favour of the declared default
+rather than handed to a plugin that can no longer handle it.
+
+**Contract impact:** additive — `ctx.settings`, `SettingsSchema`, `PropertySchema`.
+`contributes.settings` was `Record<string, unknown>` since M0 and is now properly typed; the
+compiler immediately caught that manifest validation had been rubber-stamping it.
+
+---
+
+## 15 · `Disposable` vs. what `useEffect` wants
+
+**Feature:** settings UI · **Verdict:** PLUGIN ADAPTED — host is right
+
+`ctx.settings.onChange` returns a `Disposable` per invariant 8, so this does not compile:
+
+```tsx
+useEffect(() => ctx.plugin.settings.onChange(handler), [ctx]);   // ✗
+```
+
+React wants a plain `() => void`. The preload's own subscriptions (`onCommand`,
+`onPluginChanged`) *do* return bare functions, which makes the SDK's shape look inconsistent
+next to them.
+
+**The SDK is right and should not change.** Invariant 8 exists because the host tracks every
+registration and unwinds it on deactivate — a bare function cannot be tracked. The preload is
+the odd one out, and it is not part of the plugin contract.
+
+The adaptation is three lines and belongs in the plugin template alongside the async-restore
+trap from entries 6 and 13:
+
+```tsx
+useEffect(() => {
+  const sub = ctx.plugin.settings.onChange(handler);
+  return () => { void sub.dispose(); };
+}, [ctx]);
+```
+
+That is now **three** distinct papercuts every stateful plugin hits. `tools/create-plugin` has
+gone from a nice-to-have to the thing that stops the same three bugs being rediscovered.
+
+**Contract impact:** none.

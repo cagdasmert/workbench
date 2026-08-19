@@ -1,6 +1,8 @@
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { CommandArgSchema, PluginManifest } from '@workbench/plugin-sdk';
+import type {
+  CommandArgSchema, PluginManifest, PropertySchema, SettingsSchema,
+} from '@workbench/plugin-sdk';
 
 /** id → absolute plugin directory. Populated by scanPlugins, read by the protocol handler. */
 export const pluginRoots = new Map<string, string>();
@@ -43,6 +45,56 @@ function entries<T>(
   if (v === undefined) return undefined;
   if (!Array.isArray(v)) throw new Error(`${where}: "${key}" must be an array`);
   return v.map((e, i) => read(requireObject(e, `${key}[${i}]`, where), `${where} ${key}[${i}]`));
+}
+
+const PROP_TYPES = new Set(['string', 'number', 'boolean']);
+
+/**
+ * The shell renders a form from this and writes values back, so a malformed
+ * schema is not a cosmetic problem — it is an uneditable or mistyped setting.
+ * Check it at discovery, where the plugin can be marked broken.
+ */
+function validateSettings(raw: unknown, where: string): SettingsSchema {
+  const o = requireObject(raw, 'settings', where);
+  const out: SettingsSchema = {};
+
+  for (const [key, value] of Object.entries(o)) {
+    const at = `${where} settings.${key}`;
+    const prop = requireObject(value, key, at);
+    const type = prop['type'];
+    if (typeof type !== 'string' || !PROP_TYPES.has(type)) {
+      throw new Error(`${at}: "type" must be one of ${[...PROP_TYPES].join(', ')}`);
+    }
+
+    const description = prop['description'];
+    if (description !== undefined && typeof description !== 'string') {
+      throw new Error(`${at}: "description" must be a string`);
+    }
+
+    const enumValues = prop['enum'];
+    if (enumValues !== undefined) {
+      if (!Array.isArray(enumValues) || enumValues.some((e) => typeof e !== 'string')) {
+        throw new Error(`${at}: "enum" must be an array of strings`);
+      }
+      if (type !== 'string') throw new Error(`${at}: "enum" is only valid for type "string"`);
+    }
+
+    const dflt = prop['default'];
+    if (dflt !== undefined) {
+      if (typeof dflt !== type) throw new Error(`${at}: "default" must be a ${type}`);
+      if (Array.isArray(enumValues) && !enumValues.includes(dflt as string)) {
+        throw new Error(`${at}: "default" must be one of ${(enumValues as string[]).join(', ')}`);
+      }
+    }
+
+    out[key] = {
+      type: type as PropertySchema['type'],
+      ...(description === undefined ? {} : { description }),
+      ...(enumValues === undefined ? {} : { enum: enumValues as string[] }),
+      ...(dflt === undefined ? {} : { default: dflt as string | number | boolean }),
+    };
+  }
+  return out;
 }
 
 export function validateManifest(raw: unknown, where: string): PluginManifest {
@@ -97,7 +149,7 @@ export function validateManifest(raw: unknown, where: string): PluginManifest {
   const emits = c['emits'] === undefined
     ? undefined : stringArray(c['emits'], 'emits', where);
   const settings = c['settings'] === undefined
-    ? undefined : requireObject(c['settings'], 'settings', where);
+    ? undefined : validateSettings(c['settings'], where);
   const permissions = o['permissions'] === undefined
     ? undefined : stringArray(o['permissions'], 'permissions', where);
 

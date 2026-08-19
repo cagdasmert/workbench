@@ -9,6 +9,7 @@ import { watchPluginBuilds } from './watcher.js';
 import { registerFsBroker } from './fs-broker.js';
 import { registerStorageBroker } from './storage-broker.js';
 import { registerNetBroker, loadNetPermissions } from './net-broker.js';
+import { registerSettingsBroker, loadSettingsSchemas } from './settings-broker.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -80,6 +81,7 @@ app.whenReady().then(async () => {
   for (const m of manifests) console.log('[plugins] manifest:', JSON.stringify(m));
 
   loadNetPermissions(manifests);
+  loadSettingsSchemas(manifests);
 
   ipcMain.handle('plugins:list', () => manifests);
 
@@ -94,6 +96,9 @@ app.whenReady().then(async () => {
   registerFsBroker(win);
   registerStorageBroker();
   registerNetBroker();
+  registerSettingsBroker((pluginId, key, value) => {
+    if (!win.isDestroyed()) win.webContents.send('settings:changed', pluginId, key, value);
+  });
   buildMenu(manifests, win);
 
   // Dev only: the orchestrator builds, main just notices the output changed.

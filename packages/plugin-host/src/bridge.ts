@@ -1,5 +1,5 @@
 import type {
-  FileFilter, JsonValue, NetRequestInit, NetResponse, PluginManifest,
+  FileFilter, JsonValue, NetRequestInit, NetResponse, PluginManifest, SettingsSchema,
 } from '@workbench/plugin-sdk';
 
 /**
@@ -14,6 +14,11 @@ export interface WorkbenchHostBridge {
   pickFile(filters?: FileFilter[]): Promise<string | undefined>;
   readFile(path: string): Promise<Uint8Array<ArrayBuffer>>;
   netFetch(pluginId: string, url: string, init?: NetRequestInit): Promise<NetResponse>;
+  settingsGet(pluginId: string, key: string): Promise<JsonValue | undefined>;
+  settingsAll(pluginId: string): Promise<Record<string, JsonValue>>;
+  settingsSchemas(): Promise<Record<string, SettingsSchema>>;
+  settingsSet(pluginId: string, key: string, value: JsonValue): Promise<void>;
+  onSettingChanged(cb: (pluginId: string, key: string, value: JsonValue) => void): () => void;
   storageGet(pluginId: string, key: string): Promise<JsonValue | undefined>;
   storageSet(pluginId: string, key: string, value: JsonValue): Promise<void>;
   onCommand(cb: (commandId: string) => void): () => void;

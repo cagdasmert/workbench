@@ -6,44 +6,42 @@ plugins. Electron + TypeScript + React, npm workspaces.
 **The plugin contract is the product. The features are disposable.** Optimise every decision
 for the contract staying stable, not for shipping a viewer faster.
 
-## Current milestone: M2
+## Current milestone: M3
 
-M0 and M1 are **done**. `@workbench/plugin-sdk` is **frozen at `1.0`** and tagged — earned by
-building mermaid, image, and JSON viewers with `packages/shell` unchanged (decisions D8, D9).
+M0, M1 and M2 are **done**. `@workbench/plugin-sdk` is frozen at `1.x` — tagged at `1.0`, now
+`1.3` after three additive bumps (`CommandArgSchema`, `bus`/`Content`, `net`). No line of the
+panel API, lifecycle, `Disposable`, or manifest schema has changed since the freeze.
 
-**The contract is now frozen. Treat `packages/plugin-sdk/src/index.ts` as closed.** Adding a
-method is a minor bump and needs a caller that exists. Changing or removing anything is a
-**major bump plus a migration note in the architecture decision log** — not a drive-by edit.
-This is the discipline the whole project has been building toward; it only means something if
-it survives contact with M2.
+**The contract is frozen. Treat `packages/plugin-sdk/src/index.ts` as closed.** Additive is a
+minor bump and needs a caller that already exists. Changing or removing anything is a **major
+bump plus a migration note in the decision log**.
 
-M2 delivers:
+M3 delivers the three things that make the app usable by someone who did not write it:
 
-1. **Command palette** (`⌘K`) over the existing command registry. **Every command carries a
-   JSON-schema argument signature from its first commit** — retrofitting schemas onto 60
-   commands later is the tedium that kills the agent-tool-manifest idea in `ai-layer-options`
-   §5.
-2. **Typed content bus** as **waterfall middleware** (`(payload, next)`), not a plain router —
-   per the Cordis analysis §3, same code volume and strictly more expressive. Routing table
-   comes from the `accepts`/`emits` already declared in every manifest.
-3. **`ai-provider`** as an ordinary plugin — never a shell service, or the app stops working
-   offline. Thin `AiProvider` against an OpenAI-compatible endpoint pointed at Ollama, then
-   text→mermaid as the routing demo.
+1. **Settings UI generated from each plugin's JSON Schema.** Plugins declare
+   `contributes.settings` and read `ctx.settings`; they never build a form. `ai-provider`
+   already declares `backend` and `model` and is the first consumer.
+2. **Keybinding registry** with user overrides stored *separately* from defaults, so updating a
+   plugin never clobbers a rebind.
+3. **Plugin manager** — enable/disable/reload, and `failed` plugins visible with their stack
+   traces. The M0 error card already promises a **Reload plugin** button; this is where it gets
+   one.
 
-Keep `docs/m1-shell-change-log.md` going as an M2 log. The bar is higher now: a shell change
-is expected in M2 (the palette *is* shell work), but an **SDK** change is a contract event.
+Keep appending to `docs/m1-shell-change-log.md`. Shell work is expected in M3; an **SDK**
+change is still a contract event and gets an entry.
 
-**Do not build in M2:** settings UI · keybindings · plugin manager · packaging · session
-restore. Those are M3–M4.
+**Do not build in M3:** packaging · session restore · tabs or splits. Those are M4.
 
 ### Known gaps carried forward
 
 - **The production CSP is not enforced** — `onHeadersReceived` never fires for `file://`, so
   the strict policy protects dev but not a packaged build. Fix is an `app://` scheme (M4).
-- **Menus are built once at startup** — editing a manifest label needs a restart (M3).
+- **Menus are built once at startup** — editing a manifest label needs a restart. M3's plugin
+  manager is the natural place to fix this.
 - **`storage` is scoped, not isolated** — the preload bridge takes a `pluginId`, so under the
-  in-process model any plugin can read another's data directly. Same seam iframe isolation
-  would close.
+  in-process model any plugin can read another's data directly.
+- **The async-restore trap has now bitten twice** (change log entries 6 and 13). It belongs in
+  a `tools/create-plugin` template, which does not exist yet.
 
 ## Invariants — never violate without asking
 

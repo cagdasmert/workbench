@@ -1,5 +1,6 @@
 import type {
   CommandArgSchema,
+  JsonValue,
   CommandHandler,
   Content,
   ContentHandler,
@@ -81,6 +82,8 @@ export class PluginHost {
   private readonly importModule: ImportModule;
 
   private readonly receivers = new Map<string, ContentHandler[]>();
+  private readonly settingsListeners =
+    new Map<string, Array<(key: string, value: JsonValue) => void>>();
   private readonly routeListeners = new Set<(choice: RouteChoice) => void>();
   private readonly noticeListeners = new Set<(msg: string) => void>();
 
@@ -215,6 +218,17 @@ export class PluginHost {
    * across a reload while the panel *definition* behind it is not — without a
    * signal, a memoised lookup would keep handing back the dead definition.
    */
+  /** Called by the shell when a setting is written, so plugins observe one path. */
+  notifySettingChanged(pluginId: string, key: string, value: JsonValue): void {
+    for (const cb of this.settingsListeners.get(pluginId) ?? []) {
+      try {
+        cb(key, value);
+      } catch (err) {
+        console.error(`[plugin:${pluginId}] settings.onChange threw`, err);
+      }
+    }
+  }
+
   onReload(cb: (pluginId: string) => void): () => void {
     this.reloadListeners.add(cb);
     return () => this.reloadListeners.delete(cb);
@@ -477,6 +491,20 @@ export class PluginHost {
       storage: {
         get: async (key) => await this.bridge.storageGet(pluginId, key) as never,
         set: async (key, value) => { await this.bridge.storageSet(pluginId, key, value); },
+      },
+
+      settings: {
+        get: async (key) => await this.bridge.settingsGet(pluginId, key) as never,
+        onChange: (cb) => {
+          const list = this.settingsListeners.get(pluginId) ?? [];
+          list.push(cb);
+          this.settingsListeners.set(pluginId, list);
+          return track(() => {
+            const current = this.settingsListeners.get(pluginId) ?? [];
+            const at = current.indexOf(cb);
+            if (at !== -1) current.splice(at, 1);
+          });
+        },
       },
 
       net: {

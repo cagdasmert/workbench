@@ -15,8 +15,6 @@ import {
 const SAMPLE = 'A user opens a file. The shell reads its manifest, activates the '
   + 'matching plugin, mounts its panel, and the plugin renders the file.';
 
-const SETTINGS_KEY = 'backend';
-
 /** Bridges a command invocation to whichever panel instance is mounted. */
 const prompts = {
   listeners: new Set<(text: string) => void>(),
@@ -43,29 +41,34 @@ function AiPanel({ ctx }: { ctx: PanelContext }) {
   const [backend, setBackend] = useState<BackendId>(DEFAULT_BACKEND);
   const [model, setModel] = useState('');
   const [models, setModels] = useState<string[]>([]);
-  const [restored, setRestored] = useState(false);
+  const [, setRestored] = useState(false);
 
-  // Restore the saved choice before anything can overwrite it — same trap as
-  // json-tools (change log entry 6).
+  // Read from ctx.settings, which the shell's settings sheet owns. The plugin
+  // never writes: one writer means onChange below can be trusted.
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const saved = await ctx.plugin.storage.get(SETTINGS_KEY);
+      const [b, m] = await Promise.all([
+        ctx.plugin.settings.get('backend'),
+        ctx.plugin.settings.get('model'),
+      ]);
       if (cancelled) return;
-      if (typeof saved === 'object' && saved !== null) {
-        const { backend: b, model: m } = saved as { backend?: unknown; model?: unknown };
-        if (isBackendId(b)) setBackend(b);
-        if (typeof m === 'string') setModel(m);
-      }
+      if (isBackendId(b)) setBackend(b);
+      if (typeof m === 'string') setModel(m);
       setRestored(true);
     })();
     return () => { cancelled = true; };
   }, [ctx]);
 
   useEffect(() => {
-    if (!restored) return;
-    void ctx.plugin.storage.set(SETTINGS_KEY, { backend, model });
-  }, [ctx, backend, model, restored]);
+    // onChange returns a Disposable (invariant 8), not the plain cleanup
+    // function useEffect wants — the host tracks it for teardown.
+    const sub = ctx.plugin.settings.onChange((key, value) => {
+      if (key === 'backend' && isBackendId(value)) setBackend(value);
+      if (key === 'model' && typeof value === 'string') setModel(value);
+    });
+    return () => { void sub.dispose(); };
+  }, [ctx]);
 
   useEffect(() => backendChanges.on(setBackend), []);
 
@@ -116,7 +119,8 @@ function AiPanel({ ctx }: { ctx: PanelContext }) {
         <select
           style={styles.select}
           value={backend}
-          onChange={(e) => { setBackend(e.target.value as BackendId); setModel(''); }}
+          onChange={(e) => setBackend(e.target.value as BackendId)}
+          title="Session only — Settings makes it persistent"
         >
           {Object.entries(BACKENDS).map(([id, b]) => (
             <option key={id} value={id}>{b.label}</option>
@@ -253,7 +257,8 @@ export const plugin: Plugin = {
         await ctx.ui.notify(`Unknown backend: ${String(next)}`, 'warn');
         return;
       }
-      await ctx.storage.set(SETTINGS_KEY, { backend: next, model: '' });
+      // Session-scoped. Persisting is the settings sheet's job — a plugin
+      // writing its own settings would mean two writers and a race.
       backendChanges.emit(next);
       await ctx.workspace.openPanel('ai.main');
     });

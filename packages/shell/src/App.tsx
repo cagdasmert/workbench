@@ -7,6 +7,7 @@ import {
 import type { PluginManifest } from '@workbench/plugin-sdk';
 import { PanelHost } from './PanelHost.js';
 import { CommandPalette } from './CommandPalette.js';
+import { SettingsPanel } from './SettingsPanel.js';
 
 export function App() {
   const [host] = useState(() => createPluginHost());
@@ -24,11 +25,21 @@ export function App() {
   useEffect(() => host.onActivePanelChange(setPanelId), [host]);
 
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [route, setRoute] = useState<RouteChoice | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   // Multiple plugins accept the type — architecture §5.2 says ask, don't guess.
   useEffect(() => host.onRouteChoice(setRoute), [host]);
+
+  // One path from a settings write to a plugin observing it: main persists,
+  // broadcasts, and the host fans out to that plugin's listeners.
+  useEffect(
+    () => window.workbenchHost.onSettingChanged((pluginId, key, value) => {
+      host.notifySettingChanged(pluginId, key, value);
+    }),
+    [host],
+  );
 
   useEffect(() => host.onNotice((msg) => {
     setNotice(msg);
@@ -45,6 +56,9 @@ export function App() {
       }),
       host.registerShellCommand('shell.reloadPlugins', 'Reload All Plugins', async () => {
         for (const rec of host.registry.values()) await host.reload(rec.manifest.id);
+      }),
+      host.registerShellCommand('shell.openSettings', 'Open Settings', async () => {
+        setSettingsOpen(true);
       }),
     ];
     return () => { for (const d of disposables) void d.dispose(); };
@@ -106,6 +120,9 @@ export function App() {
         <PanelHost panel={panel} />
       </main>
       {notice !== null && <div className="shell-toast">{notice}</div>}
+      {settingsOpen && (
+        <SettingsPanel manifests={manifests} onClose={() => setSettingsOpen(false)} />
+      )}
       {route !== null && (
         <div className="shell-scrim" onMouseDown={() => setRoute(null)}>
           <div className="shell-picker" onMouseDown={(e) => e.stopPropagation()}>
