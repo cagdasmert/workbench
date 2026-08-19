@@ -1,0 +1,40 @@
+appId: dev.cagdasmert.workbench
+productName: Workbench
+copyright: Copyright © 2026 cagdasmert
+
+directories:
+  output: release
+  buildResources: build
+
+# The app is the built output only. Sources, tests and configs are not shipped.
+files:
+  - packages/main/dist/**
+  - packages/preload/dist/**
+  - packages/shell/dist/**
+  - package.json
+  - '!**/*.map'
+
+# Plugins ship beside the asar, not inside it: the plugin:// handler reads them
+# as ordinary files, and a user must be able to drop a new one in without
+# repacking the app. Sources and node_modules are excluded — only the bundle
+# and its manifest are needed at runtime.
+extraResources:
+  - from: plugins
+    to: plugins
+    filter:
+      - '*/plugin.json'
+      - '*/dist/**'
+
+asar: true
+
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - target: dir
+      arch: arm64
+  # Ad-hoc signing only — personal use on this machine. No Developer ID, no
+  # notarization (architecture §9). electron-builder skips signing when identity
+  # is null; the ad-hoc signature is applied afterwards by scripts/sign.mjs.
+  identity: null
+  extendInfo:
+    LSMinimumSystemVersion: '14.0'

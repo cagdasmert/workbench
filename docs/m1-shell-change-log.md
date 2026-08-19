@@ -718,3 +718,52 @@ so it is platform placement, not drift.
 Panel *contents* are deliberately not part of this. `json-tools` already persists its document
 through `ctx.storage`, so restoring the panel restores the work as a consequence. The session
 file stays a pointer, not a snapshot.
+
+---
+
+## 24 · A packaged app resolves nothing the way the source tree does
+
+**Feature:** packaging · **Verdict:** the trap that was flagged in advance, and was real
+
+`PLUGIN_DEV_DIR` was `path.join(__dirname, '../../../plugins')` — correct in the repo, and
+meaningless inside a `.app`. The failure mode is silent: `scanPlugins` finds an absent
+directory, warns, returns an empty list, and the app opens with **no plugins and no error**.
+
+`packages/main/src/paths.ts` now resolves all three of plugins, shell, and preload from
+`app.isPackaged`, and `scanPlugins` takes a *list* of directories:
+
+1. `userData/plugins` — user-installed, writable, wins on an id collision
+2. `resourcesPath/plugins` — shipped with the app, read-only
+
+Earlier wins, so a user can shadow a bundled plugin with their own copy of the same id instead
+of colliding with it. Verified in the built bundle: *"no plugin directory at
+…/Workbench/plugins"* for the empty user dir, followed by all five discovered from `Resources`.
+
+**Plugins ship beside the asar, not inside it.** The `plugin://` handler reads them as ordinary
+files, and a user must be able to drop one in without repacking the app. Only `plugin.json` and
+`dist/**` are copied — not sources, not `node_modules`.
+
+**`app.setName('Workbench')` was overdue.** Without it `userData` follows the executable name,
+so development had been writing to `.../Application Support/Electron` — a directory shared with
+every other unsigned Electron app — rather than the path architecture §7 specifies. Settings,
+keybindings, plugin data and sessions written before this commit are still in the old location
+and are not migrated.
+
+**Verified inside the built, signed bundle**, not just unpackaged:
+
+| check | result |
+|---|---|
+| shell origin | `app://shell` — served from inside the asar |
+| plugins discovered | 5, from `Contents/Resources/plugins` |
+| plugin code executes | `mermaid-viewer` active, 6-node SVG rendered |
+| CSP live | `fetch('https://example.com')` refused |
+| signature | `valid on disk`, `satisfies its Designated Requirement` |
+
+Ad-hoc signing (`codesign --force --deep -s -`) is applied by `scripts/sign.mjs` after
+electron-builder, which is configured with `identity: null` so it does not attempt a real
+signing pass. No Developer ID, no notarization — architecture §9's position for a locally built
+personal app.
+
+The bundle is **319 MB**, of which the great majority is Electron itself plus mermaid's 8 MB and
+its sourcemap. Not addressed: sourcemaps ship in `extraResources` because plugin `dist/**` is
+copied wholesale.

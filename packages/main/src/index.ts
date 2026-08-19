@@ -1,8 +1,7 @@
 import { app, BrowserWindow, ipcMain, session } from 'electron';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { scanPlugins } from './plugins.js';
+import { pluginSearchPaths, shellDist, preloadScript } from './paths.js';
 import { registerPluginScheme, handlePluginProtocol } from './protocol.js';
 import { registerAppScheme, handleAppProtocol, APP_ORIGIN } from './app-protocol.js';
 import { buildMenu } from './menu.js';
@@ -15,11 +14,12 @@ import { loadPluginState, registerPluginStateBroker, disabledIds } from './plugi
 import { loadKeybindings, registerKeybindingsBroker } from './keybindings-broker.js';
 import { loadSession, initialBounds, trackWindow, registerSessionBroker } from './session.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// Architecture §7 puts everything under ~/Library/Application Support/Workbench.
+// Without this the userData path follows the executable name and dev writes to
+// .../Electron instead.
+app.setName('Workbench');
 
 const DEV = process.env['VITE_DEV_SERVER_URL'] !== undefined;
-const PLUGIN_DEV_DIR = path.join(__dirname, '../../../plugins');
-const SHELL_DIST = path.join(__dirname, '../../shell/dist');
 
 // Must happen before app.whenReady().
 registerPluginScheme();
@@ -63,7 +63,7 @@ function createWindow(): BrowserWindow {
     show: false,           // avoid a flash at the default size before restore
     titleBarStyle: 'default',
     webPreferences: {
-      preload: path.join(__dirname, '../../preload/dist/index.cjs'),
+      preload: preloadScript(),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -86,15 +86,16 @@ function createWindow(): BrowserWindow {
 app.whenReady().then(async () => {
   installCsp();
   handlePluginProtocol();
-  handleAppProtocol(SHELL_DIST);
+  handleAppProtocol(shellDist());
 
   await loadPluginState();
   await loadKeybindings();
   await loadSession();
 
-  const manifests = await scanPlugins(PLUGIN_DEV_DIR);
+  const searchPaths = pluginSearchPaths();
+  const manifests = await scanPlugins(searchPaths);
   console.log(
-    `[plugins] discovered ${manifests.length} in ${PLUGIN_DEV_DIR}:`,
+    `[plugins] discovered ${manifests.length} in ${searchPaths.join(', ')}:`,
     manifests.map((m) => `${m.id}@${m.version}`),
   );
   for (const m of manifests) console.log('[plugins] manifest:', JSON.stringify(m));

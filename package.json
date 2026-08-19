@@ -1,5 +1,9 @@
 {
   "name": "workbench",
+  "version": "0.4.0",
+  "description": "A local macOS app that hosts small utilities as plugins",
+  "author": "cagdasmert",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "workspaces": [
@@ -14,7 +18,9 @@
     "build:app": "node scripts/build-app.mjs",
     "build:plugins": "node scripts/build-plugins.mjs",
     "build:shell": "npm run build -w @workbench/shell",
-    "create-plugin": "node tools/create-plugin/index.mjs"
+    "create-plugin": "node tools/create-plugin/index.mjs",
+    "build": "npm run build:app && npm run build:shell && npm run build:plugins",
+    "package": "npm run build && electron-builder --mac && node scripts/sign.mjs"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
@@ -23,6 +29,7 @@
     "@vitejs/plugin-react": "^6.0.5",
     "chokidar": "^5.0.0",
     "electron": "^43.4.1",
+    "electron-builder": "^26.15.3",
     "esbuild": "^0.28.2",
     "typescript": "^7.0.2",
     "vite": "^8.2.1",
@@ -31,5 +38,6 @@
   "dependencies": {
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
-  }
+  },
+  "main": "packages/main/dist/index.js"
 }

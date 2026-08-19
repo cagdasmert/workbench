@@ -213,32 +213,37 @@ export function validateManifest(raw: unknown, where: string): PluginManifest {
  * Read every manifest under `dir`. Never executes plugin code — main is the
  * privileged process and running plugin code here would collapse the security model.
  */
-export async function scanPlugins(dir: string): Promise<PluginManifest[]> {
+export async function scanPlugins(dirs: string[]): Promise<PluginManifest[]> {
   const out: PluginManifest[] = [];
   pluginRoots.clear();
 
-  let dirents;
-  try {
-    dirents = await readdir(dir, { withFileTypes: true });
-  } catch {
-    console.warn(`[plugins] no plugin directory at ${dir}`);
-    return out;                       // directory absent is not an error
-  }
-
-  for (const e of dirents) {
-    if (!e.isDirectory()) continue;
-    const root = path.join(dir, e.name);
+  // Earlier directories win on an id collision, so a user-installed plugin can
+  // shadow a bundled one of the same id rather than colliding with it.
+  for (const dir of dirs) {
+    let dirents;
     try {
-      const raw = await readFile(path.join(root, 'plugin.json'), 'utf8');
-      const manifest = validateManifest(JSON.parse(raw), e.name);
-      if (pluginRoots.has(manifest.id)) {
-        throw new Error(`duplicate plugin id "${manifest.id}"`);
+      dirents = await readdir(dir, { withFileTypes: true });
+    } catch {
+      console.warn(`[plugins] no plugin directory at ${dir}`);
+      continue;                       // an absent directory is not an error
+    }
+
+    for (const e of dirents) {
+      if (!e.isDirectory()) continue;
+      const root = path.join(dir, e.name);
+      try {
+        const raw = await readFile(path.join(root, 'plugin.json'), 'utf8');
+        const manifest = validateManifest(JSON.parse(raw), e.name);
+        if (pluginRoots.has(manifest.id)) {
+          console.warn(`[plugins] ${manifest.id} in ${dir} is shadowed by an earlier copy`);
+          continue;
+        }
+        pluginRoots.set(manifest.id, root);
+        out.push(manifest);
+      } catch (err) {
+        console.error(`[plugins] bad manifest in ${e.name}:`, err);
+        // keep going — one broken plugin must not stop discovery
       }
-      pluginRoots.set(manifest.id, root);
-      out.push(manifest);
-    } catch (err) {
-      console.error(`[plugins] bad manifest in ${e.name}:`, err);
-      // keep going — one broken plugin must not stop discovery
     }
   }
   return out;
