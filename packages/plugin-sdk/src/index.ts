@@ -109,8 +109,19 @@ export interface PluginContext {
     set<T extends JsonValue>(key: string, value: T): Promise<void>;
   };
 
+  /**
+   * Typed content routing. The shell builds a table from the `accepts`/`emits`
+   * declared in every manifest, so it knows which plugins could receive a
+   * payload without loading any of them.
+   */
+  bus: {
+    emit(content: Content): Promise<void>;
+    onReceive(handler: ContentHandler): Disposable;
+  };
+
   workspace: {
-    openPanel(panelId: string): Promise<void>;
+    /** `payload` reaches the panel as `PanelContext.payload`. */
+    openPanel(panelId: string, payload?: Content): Promise<void>;
     closePanel(panelId: string): Promise<void>;
   };
 
@@ -120,6 +131,37 @@ export interface PluginContext {
 
   log: Logger;
 }
+
+// ─── content bus ─────────────────────────────────────────────
+export interface Content {
+  /** MIME where one exists, `text/vnd.*` otherwise. */
+  type: string;
+  data: string | Uint8Array | JsonValue;
+  meta?: {
+    filename?: string;
+    sourcePluginId?: string;
+    [k: string]: unknown;
+  };
+}
+
+/**
+ * Waterfall result. Architecture §5 describes Cordis-style middleware with a
+ * `(payload, next)` signature, but passing `next` *into* a handler is a
+ * callback-in-argument and invariant 2 forbids it — under iframe isolation
+ * there is no way to hand a live function across the boundary.
+ *
+ * The same expressiveness comes back as a return value, which serializes:
+ *
+ * - `undefined` — not handled; the shell tries the next candidate
+ * - `{ handled: true }` — stop here, short-circuiting the rest
+ * - `{ content }` — transformed; the next handler sees the new payload
+ */
+export type ContentResult =
+  | void
+  | { handled: true }
+  | { content: Content };
+
+export type ContentHandler = (content: Content) => ContentResult | Promise<ContentResult>;
 
 /**
  * A deliberately small subset of JSON Schema — enough to describe a command's

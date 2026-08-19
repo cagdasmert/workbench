@@ -16,6 +16,9 @@ const SAMPLE = `graph TD
   A -->|registerPanel| P[mount el, ctx]
   P -->|returns| T[teardown]`;
 
+/** Last successful render, so the export command has something to emit. */
+let lastSvg = '';
+
 const themeRequests = {
   listeners: new Set<() => void>(),
   emit() { for (const l of this.listeners) l(); },
@@ -41,6 +44,7 @@ function MermaidPanel() {
         .render(`mmd-${renderSeq}`, source)
         .then((result) => {
           if (cancelled) return;
+          lastSvg = result.svg;
           setSvg(result.svg);
           setError(null);
         })
@@ -138,6 +142,21 @@ export const plugin: Plugin = {
     ctx.log.info('mermaid-viewer activating');
     ctx.registerPanel('mermaid.main', definePanel(MermaidPanel));
     ctx.registerCommand('mermaid.open', () => ctx.workspace.openPanel('mermaid.main'));
+
+    // Emits into the bus and names no destination. The shell routes it from the
+    // `emits`/`accepts` in the manifests — this plugin does not know the image
+    // viewer exists, and must not.
+    ctx.registerCommand('mermaid.export', async () => {
+      if (lastSvg === '') {
+        await ctx.ui.notify('Nothing rendered yet', 'warn');
+        return;
+      }
+      await ctx.bus.emit({
+        type: 'image/svg+xml',
+        data: lastSvg,
+        meta: { filename: 'diagram.svg' },
+      });
+    });
 
     ctx.registerCommand('mermaid.theme', async (...args: unknown[]) => {
       const theme = typeof args[0] === 'string' ? args[0] : 'default';

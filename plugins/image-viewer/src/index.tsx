@@ -33,15 +33,36 @@ interface Loaded {
   bytes: number;
 }
 
+/** Content the shell routed here, handed over as PanelContext.payload. */
+function fromPayload(payload: unknown): Loaded | null {
+  if (typeof payload !== 'object' || payload === null) return null;
+  const { type, data, meta } = payload as { type?: unknown; data?: unknown; meta?: unknown };
+  if (typeof type !== 'string' || !type.startsWith('image/')) return null;
+
+  const blob = typeof data === 'string'
+    ? new Blob([data], { type })
+    : data instanceof Uint8Array
+      ? new Blob([data as unknown as BlobPart], { type })
+      : null;
+  if (blob === null) return null;
+
+  const name = (meta as { filename?: unknown } | undefined)?.filename;
+  return {
+    path: typeof name === 'string' ? name : type,
+    url: URL.createObjectURL(blob),
+    bytes: blob.size,
+  };
+}
+
 function ImagePanel({ ctx }: { ctx: PanelContext }) {
-  const [loaded, setLoaded] = useState<Loaded | null>(null);
+  const [loaded, setLoaded] = useState<Loaded | null>(() => fromPayload(ctx.payload));
   const [error, setError] = useState<string | null>(null);
   const [zoom, setZoom] = useState(1);
   const [dimensions, setDimensions] = useState<string>('');
 
   // Object URLs are a manual resource. Held in a ref so the unmount cleanup can
   // revoke the last one without re-running on every state change.
-  const urlRef = useRef<string | null>(null);
+  const urlRef = useRef<string | null>(loaded?.url ?? null);
   const revoke = useCallback(() => {
     if (urlRef.current !== null) {
       URL.revokeObjectURL(urlRef.current);

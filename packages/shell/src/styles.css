@@ -67,3 +67,62 @@ body {
   border: 1px solid currentColor;
   border-radius: 6px;
 }
+
+/* ── content bus: routing picker + notices ───────────────────── */
+
+.shell-scrim {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.32);
+  display: grid;
+  place-items: start center;
+  padding-top: 16vh;
+  z-index: 100;
+}
+
+.shell-picker {
+  min-width: 280px;
+  background: var(--chrome-bg);
+  border: 1px solid var(--chrome-border);
+  border-radius: 10px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.32);
+  overflow: hidden;
+}
+
+.shell-picker header {
+  padding: 10px 14px;
+  font-size: 12px;
+  color: var(--chrome-muted);
+  border-bottom: 1px solid var(--chrome-border);
+}
+
+.shell-picker ul { list-style: none; margin: 0; padding: 4px; }
+
+.shell-picker button {
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  padding: 8px 12px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.shell-picker button:hover { background: var(--accent-bg, rgba(59, 130, 246, 0.16)); }
+
+.shell-toast {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 9px 16px;
+  font-size: 12px;
+  color: var(--chrome-fg);
+  background: var(--chrome-bg);
+  border: 1px solid var(--chrome-border);
+  border-radius: 999px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.24);
+  z-index: 120;
+}

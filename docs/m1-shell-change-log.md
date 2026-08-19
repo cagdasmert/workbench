@@ -281,3 +281,58 @@ should work; requiring a second, redundant declaration to make it actually work 
 with no upside. Two tests cover it.
 
 **Contract impact:** none — host behaviour only. Manifests get *more* permissive, never less.
+
+---
+
+## 9 · Waterfall middleware cannot take a `next` callback
+
+**Feature:** content bus · **Verdict:** SDK 1.1 → 1.2, additive — with a deliberate deviation
+from the architecture doc
+
+Architecture §5 and the Cordis analysis §3 both call for waterfall middleware with a
+`(payload, next)` signature: short-circuit by not calling `next()`.
+
+**That signature is unimplementable here.** `next` is a callback passed *into* the plugin's
+handler, and invariant 2 forbids callbacks-in-arguments across the plugin boundary — under
+iframe isolation there is no way to hand a live function across. Shipping it would have made
+the bus the one thing blocking the migration D2 exists to keep open.
+
+The expressiveness comes back as a **return value**, which serializes cleanly:
+
+| return | meaning |
+|---|---|
+| `undefined` | not handled — try the next handler |
+| `{ handled: true }` | stop, short-circuiting the rest |
+| `{ content }` | transformed — the next handler sees the new payload |
+
+Transform, delegate, and short-circuit all survive; only the calling convention changed. A
+test asserts the full waterfall: handler one transforms, handler two short-circuits, handler
+three never runs.
+
+**`architecture.md` §5 should be corrected** — it currently specifies a signature that
+violates invariant 2, and the next person to read it will implement the wrong thing.
+
+**Contract impact:** additive — `Content`, `ContentResult`, `ContentHandler`, `ctx.bus`, and an
+optional `payload` argument on `openPanel`. `PanelContext.payload` was reserved in M0 for
+exactly this and needed no change.
+
+---
+
+## 10 · The routing table needed no manifest changes
+
+**Feature:** content bus · **Verdict:** the contract worked
+
+Worth recording as a success rather than a defect. The `accepts`/`emits` fields were added to
+`PluginManifest` in M0 as parsed-and-ignored forward compatibility, and filled in during M1 by
+viewers that had no bus to talk to.
+
+When the bus arrived, `mermaid-viewer` declaring `emits: ["image/svg+xml"]` and `image-viewer`
+declaring `accepts: [… "image/svg+xml"]` routed to each other with **no manifest edits and no
+plugin knowing the other exists**. Verified end to end: `mermaid.export` took the image viewer
+from `discovered` to `active` with the diagram rendered from a `blob:` URL.
+
+Three routing rules also verified live: exactly one match routes directly; several raise a
+"Send to…" picker (`text/plain` → JSON Tools + Mermaid Viewer); none produces a notice
+(`No plugin accepts video/mp4`). A payload is never routed back to its emitter.
+
+That is decision D3 paying off — the field cost one line per manifest and was worth it.

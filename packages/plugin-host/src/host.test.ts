@@ -137,6 +137,127 @@ describe('disposal', () => {
   });
 });
 
+describe('content bus', () => {
+  function twoPlugins(acceptsA: string[], acceptsB: string[]) {
+    const host = createPluginHost({
+      bridge,
+      importModule: async () => ({ plugin: noop }),
+    });
+    host.load([
+      { ...manifest(), id: 'a', name: 'A', contributes: { accepts: acceptsA } },
+      { ...manifest(), id: 'b', name: 'B', contributes: { accepts: acceptsB } },
+    ]);
+    return host;
+  }
+
+  it('routes to the single plugin that accepts the type', async () => {
+    const host = twoPlugins(['image/svg+xml'], ['application/json']);
+    const seen: string[] = [];
+    const spy: Plugin = {
+      activate(ctx) { ctx.bus.onReceive((c) => { seen.push(`${ctx.id}:${c.type}`); }); },
+    };
+    const routed = createPluginHost({ bridge, importModule: async () => ({ plugin: spy }) });
+    routed.load([
+      { ...manifest(), id: 'a', name: 'A', contributes: { accepts: ['image/svg+xml'] } },
+      { ...manifest(), id: 'b', name: 'B', contributes: { accepts: ['application/json'] } },
+    ]);
+
+    await routed.emit({ type: 'image/svg+xml', data: '<svg/>' });
+
+    expect(seen).toEqual(['a:image/svg+xml']);
+    expect(routed.get('b')?.state).toBe('discovered');   // never woken
+    void host;
+  });
+
+  it('raises a choice when several plugins accept the type', async () => {
+    const host = twoPlugins(['text/plain'], ['text/plain']);
+    const choices: string[][] = [];
+    host.onRouteChoice((c) => choices.push(c.candidates.map((x) => x.pluginId)));
+
+    await host.emit({ type: 'text/plain', data: 'hi' });
+
+    expect(choices).toEqual([['a', 'b']]);
+    // nothing delivered until the user picks
+    expect(host.get('a')?.state).toBe('discovered');
+  });
+
+  it('notices when nothing accepts the type', async () => {
+    const host = twoPlugins(['text/plain'], ['application/json']);
+    const notices: string[] = [];
+    host.onNotice((m) => notices.push(m));
+
+    await host.emit({ type: 'video/mp4', data: 'x' });
+
+    expect(notices).toEqual(['No plugin accepts video/mp4']);
+  });
+
+  it('never routes a payload back to its emitter', async () => {
+    const host = twoPlugins(['text/plain'], ['text/plain']);
+    const notices: string[] = [];
+    host.onNotice((m) => notices.push(m));
+    const choices: unknown[] = [];
+    host.onRouteChoice((c) => choices.push(c));
+
+    // 'a' emits a type both accept — only 'b' is a candidate, so it routes
+    // directly instead of asking.
+    await host.emit({ type: 'text/plain', data: 'x' }, 'a');
+
+    expect(choices).toEqual([]);
+    expect(notices).toEqual([]);
+    expect(host.get('b')?.state).toBe('active');
+    expect(host.get('a')?.state).toBe('discovered');
+  });
+
+  it('runs handlers as a waterfall: transform, then short-circuit', async () => {
+    const order: string[] = [];
+    const waterfall: Plugin = {
+      activate(ctx) {
+        ctx.bus.onReceive((c) => {
+          order.push(`first:${String(c.data)}`);
+          return { content: { ...c, data: `${String(c.data)}+1` } };
+        });
+        ctx.bus.onReceive((c) => {
+          order.push(`second:${String(c.data)}`);
+          return { handled: true };
+        });
+        ctx.bus.onReceive(() => { order.push('third'); });
+      },
+    };
+    const host = createPluginHost({ bridge, importModule: async () => ({ plugin: waterfall }) });
+    host.load([{ ...manifest(), id: 'a', name: 'A', contributes: { accepts: ['text/plain'] } }]);
+
+    await host.emit({ type: 'text/plain', data: 'x' });
+
+    // second sees the transformed payload; third never runs
+    expect(order).toEqual(['first:x', 'second:x+1']);
+  });
+
+  it('stamps the emitting plugin into meta', async () => {
+    let got: unknown;
+    const spy: Plugin = { activate(ctx) { ctx.bus.onReceive((c) => { got = c.meta; }); } };
+    const host = createPluginHost({ bridge, importModule: async () => ({ plugin: spy }) });
+    host.load([
+      { ...manifest(), id: 'a', name: 'A', contributes: { accepts: [] } },
+      { ...manifest(), id: 'b', name: 'B', contributes: { accepts: ['text/plain'] } },
+    ]);
+
+    await host.emit({ type: 'text/plain', data: 'x' }, 'a');
+
+    expect(got).toEqual({ sourcePluginId: 'a' });
+  });
+
+  it('treats accepts:["*"] as a universal sink', async () => {
+    const host = twoPlugins(['*'], ['application/json']);
+    const notices: string[] = [];
+    host.onNotice((m) => notices.push(m));
+
+    await host.emit({ type: 'video/mp4', data: 'x' });
+
+    expect(notices).toEqual([]);
+    expect(host.get('a')?.state).toBe('active');
+  });
+});
+
 describe('contributions', () => {
   it('removes panels and commands registered through the context', async () => {
     let ran = 0;

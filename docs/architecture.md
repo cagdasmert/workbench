@@ -333,6 +333,12 @@ the shell knows — without loading anything — which plugins could receive it.
 
 ### 5.2 Flow
 
+> **Corrected at M2.** The waterfall signature below was originally specified as
+> `(payload, next)` per the Cordis analysis. That passes a callback *into* a plugin handler,
+> which invariant 2 forbids — see [[m1-shell-change-log]] entry 9. Handlers instead return
+> `undefined` (not handled), `{ handled: true }` (short-circuit), or `{ content }`
+> (transformed). Same expressiveness, serializable.
+
 1. Plugin A calls `ctx.bus.emit({ type, data })`.
 2. Shell looks up all plugins declaring that type in `accepts`.
 3. Exactly one match → route directly. Multiple → show a **Send to…** picker.

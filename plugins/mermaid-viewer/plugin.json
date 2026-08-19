@@ -48,6 +48,15 @@
             "theme"
           ]
         }
+      },
+      {
+        "id": "mermaid.export",
+        "title": "Export Diagram as SVG",
+        "args": {
+          "type": "object",
+          "properties": {},
+          "required": []
+        }
       }
     ],
     "accepts": [

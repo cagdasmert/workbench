@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
-import { createPluginHost, type CommandDescriptor } from '@workbench/plugin-host';
+import {
+  createPluginHost,
+  type CommandDescriptor,
+  type RouteChoice,
+} from '@workbench/plugin-host';
 import type { PluginManifest } from '@workbench/plugin-sdk';
 import { PanelHost } from './PanelHost.js';
 import { CommandPalette } from './CommandPalette.js';
@@ -20,6 +24,16 @@ export function App() {
   useEffect(() => host.onActivePanelChange(setPanelId), [host]);
 
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [route, setRoute] = useState<RouteChoice | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  // Multiple plugins accept the type — architecture §5.2 says ask, don't guess.
+  useEffect(() => host.onRouteChoice(setRoute), [host]);
+
+  useEffect(() => host.onNotice((msg) => {
+    setNotice(msg);
+    setTimeout(() => setNotice(null), 3200);
+  }), [host]);
 
   // Shell actions are commands too — no exceptions (architecture §6). They live
   // in the same registry the palette reads, so the palette can close itself.
@@ -91,6 +105,29 @@ export function App() {
       <main className="shell-workspace">
         <PanelHost panel={panel} />
       </main>
+      {notice !== null && <div className="shell-toast">{notice}</div>}
+      {route !== null && (
+        <div className="shell-scrim" onMouseDown={() => setRoute(null)}>
+          <div className="shell-picker" onMouseDown={(e) => e.stopPropagation()}>
+            <header>Send {route.content.type} to…</header>
+            <ul>
+              {route.candidates.map((c) => (
+                <li key={c.pluginId}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const target = c.pluginId;
+                      const content = route.content;
+                      setRoute(null);
+                      void host.deliver(target, content);
+                    }}
+                  >{c.name}</button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
       {paletteOpen && (
         <CommandPalette
           commands={commands}

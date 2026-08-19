@@ -1,6 +1,8 @@
 import type {
   CommandArgSchema,
   CommandHandler,
+  Content,
+  ContentHandler,
   Disposable,
   Logger,
   PanelContext,
@@ -39,6 +41,12 @@ export interface ActivePanel {
   ctx: PanelContext;
 }
 
+/** Candidate targets when a payload matches more than one plugin. */
+export interface RouteChoice {
+  content: Content;
+  candidates: Array<{ pluginId: string; name: string; panelId?: string }>;
+}
+
 /** Injectable so tests never touch the plugin:// scheme. */
 export type ImportModule = (url: string) => Promise<unknown>;
 
@@ -72,7 +80,12 @@ export class PluginHost {
   private readonly bridge: WorkbenchHostBridge;
   private readonly importModule: ImportModule;
 
+  private readonly receivers = new Map<string, ContentHandler[]>();
+  private readonly routeListeners = new Set<(choice: RouteChoice) => void>();
+  private readonly noticeListeners = new Set<(msg: string) => void>();
+
   private activePanelId: string | undefined;
+  private activePayload: Content | undefined;
   /** True while reload() is swapping a module: the panel is coming straight back,
    *  so disposing its registration must not clear the active panel. Letting it
    *  clear causes the shell to unmount the container div mid-reload, taking the
@@ -289,6 +302,92 @@ export class PluginHost {
     }
   }
 
+  // ── content bus ──────────────────────────────────────────────────
+
+  /**
+   * Plugins that declare `type` in `accepts`, read from manifests alone — no
+   * plugin is loaded to answer the question. `"*"` makes a universal sink.
+   */
+  private candidatesFor(type: string, excludePluginId?: string): PluginRecord[] {
+    return [...this.registry.values()].filter((rec) => {
+      if (rec.manifest.id === excludePluginId) return false;   // never route to self
+      const accepts = rec.manifest.contributes.accepts ?? [];
+      return accepts.includes(type) || accepts.includes('*');
+    });
+  }
+
+  /**
+   * Route a payload. Exactly one candidate goes straight there; several raise a
+   * "Send to…" choice in the shell; none produces a notice (architecture §5.2).
+   */
+  async emit(content: Content, fromPluginId?: string): Promise<void> {
+    const stamped: Content = {
+      ...content,
+      meta: { ...content.meta, ...(fromPluginId === undefined ? {} : { sourcePluginId: fromPluginId }) },
+    };
+
+    const candidates = this.candidatesFor(stamped.type, fromPluginId);
+    if (candidates.length === 0) {
+      for (const cb of this.noticeListeners) cb(`No plugin accepts ${stamped.type}`);
+      return;
+    }
+    if (candidates.length > 1) {
+      for (const cb of this.routeListeners) {
+        cb({
+          content: stamped,
+          candidates: candidates.map((rec) => ({
+            pluginId: rec.manifest.id,
+            name: rec.manifest.name,
+            ...(rec.manifest.contributes.panels?.[0] === undefined
+              ? {}
+              : { panelId: rec.manifest.contributes.panels[0].id }),
+          })),
+        });
+      }
+      return;
+    }
+
+    const only = candidates[0];
+    if (only !== undefined) await this.deliver(only.manifest.id, stamped);
+  }
+
+  /**
+   * Deliver to one plugin: activate it, run its `onReceive` handlers as a
+   * waterfall, then open its panel with whatever payload survived.
+   */
+  async deliver(pluginId: string, content: Content): Promise<void> {
+    await this.activate(pluginId);
+
+    let current = content;
+    for (const handler of this.receivers.get(pluginId) ?? []) {
+      try {
+        const result = await handler(current);
+        if (result === undefined) continue;                 // not handled, keep going
+        if ('handled' in result) return;                    // short-circuit
+        if ('content' in result) current = result.content;  // transformed
+      } catch (err) {
+        console.error(`[plugin:${pluginId}] content handler threw`, err);
+      }
+    }
+
+    const rec = this.registry.get(pluginId);
+    const panelId = rec?.manifest.contributes.panels?.[0]?.id;
+    if (panelId !== undefined && this.panels.has(panelId)) {
+      this.activePayload = current;
+      this.setActivePanel(panelId);
+    }
+  }
+
+  onRouteChoice(cb: (choice: RouteChoice) => void): () => void {
+    this.routeListeners.add(cb);
+    return () => this.routeListeners.delete(cb);
+  }
+
+  onNotice(cb: (msg: string) => void): () => void {
+    this.noticeListeners.add(cb);
+    return () => this.noticeListeners.delete(cb);
+  }
+
   // ── panels ───────────────────────────────────────────────────────
 
   getPanel(panelId: string): ActivePanel | undefined {
@@ -299,11 +398,16 @@ export class PluginHost {
     return {
       panelId,
       definition: entry.definition,
-      ctx: { panelId, plugin: this.createContext(rec) },
+      ctx: {
+        panelId,
+        plugin: this.createContext(rec),
+        ...(this.activePayload === undefined ? {} : { payload: this.activePayload }),
+      },
     };
   }
 
   async closeActivePanel(): Promise<void> {
+    this.activePayload = undefined;
     this.setActivePanel(undefined);
   }
 
@@ -375,11 +479,26 @@ export class PluginHost {
         set: async (key, value) => { await this.bridge.storageSet(pluginId, key, value); },
       },
 
+      bus: {
+        emit: async (content) => { await this.emit(content, pluginId); },
+        onReceive: (handler) => {
+          const list = this.receivers.get(pluginId) ?? [];
+          list.push(handler);
+          this.receivers.set(pluginId, list);
+          return track(() => {
+            const current = this.receivers.get(pluginId) ?? [];
+            const at = current.indexOf(handler);
+            if (at !== -1) current.splice(at, 1);
+          });
+        },
+      },
+
       workspace: {
-        openPanel: async (panelId) => {
+        openPanel: async (panelId, payload) => {
           if (!this.panels.has(panelId)) {
             throw new Error(`no panel registered with id "${panelId}"`);
           }
+          this.activePayload = payload;
           this.setActivePanel(panelId);
         },
         closePanel: async (panelId) => {
