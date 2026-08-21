@@ -1,10 +1,13 @@
 import { dialog, ipcMain, type BrowserWindow } from 'electron';
 import { readFile, readdir, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
-import type { DirEntry, FileFilter } from '@workbench/plugin-sdk';
+import type { CopyResult, DirEntry, FileFilter } from '@workbench/plugin-sdk';
 import {
-  assertReadable, grantFile, grantReadDir, isReadDirGranted,
+  assertReadable, assertWritableDir, deniedWriteReason, grantFile, grantReadDir,
+  grantWriteDir, isReadDirGranted,
 } from './fs-grants.js';
+import { copyFileExclusive } from './fs-copy.js';
+import { assertMayWrite } from './fs-permissions.js';
 
 /** The renderer is a local RPC boundary. Treat every argument as hostile. */
 function sanitizeFilters(raw: unknown): FileFilter[] | undefined {
@@ -60,6 +63,33 @@ export function registerFsBroker(getWindow: () => BrowserWindow | null): void {
     return picked;
   });
 
+  ipcMain.handle('fs:pickDirectoryForWrite', async (_event, rawDefaultPath: unknown) => {
+    const win = getWindow();
+    const options = {
+      properties: ['openDirectory' as const, 'createDirectory' as const],
+      buttonLabel: 'Copy Here',
+      // Only positions the dialog. The plugin supplies it from its own recent
+      // list, so it is untrusted — which is fine, because the grant is still
+      // whatever the user confirms, and that result is deny-list checked below.
+      ...(typeof rawDefaultPath === 'string' ? { defaultPath: rawDefaultPath } : {}),
+    };
+    const result = win === null
+      ? await dialog.showOpenDialog(options)
+      : await dialog.showOpenDialog(win, options);
+
+    const picked = result.canceled ? undefined : result.filePaths[0];
+    if (picked === undefined) return undefined;
+
+    const real = await realpath(picked);
+    const reason = deniedWriteReason(real);
+    if (reason !== null) {
+      throw new Error(`fs:write denied — "${picked}" is ${reason}`);
+    }
+
+    grantWriteDir(real);   // the dialog IS the grant
+    return picked;
+  });
+
   ipcMain.handle('fs:readDir', async (_event, rawPath: unknown): Promise<DirEntry[]> => {
     if (typeof rawPath !== 'string') throw new Error('fs:readDir expects a path string');
 
@@ -98,5 +128,23 @@ export function registerFsBroker(getWindow: () => BrowserWindow | null): void {
     }
     const real = await assertReadable(rawPath);
     return await readFile(real);
+  });
+
+  ipcMain.handle('fs:copyFile', async (
+    _event,
+    rawPluginId: unknown,
+    rawSource: unknown,
+    rawDestDir: unknown,
+  ): Promise<CopyResult> => {
+    if (typeof rawPluginId !== 'string') throw new Error('fs:copyFile expects a plugin id');
+    if (typeof rawSource !== 'string') throw new Error('fs:copyFile expects a source path');
+    if (typeof rawDestDir !== 'string') throw new Error('fs:copyFile expects a destination path');
+
+    // Order matters: cheapest and most categorical check first.
+    assertMayWrite(rawPluginId);
+    const source = await assertReadable(rawSource);
+    const destDir = await assertWritableDir(rawDestDir);
+
+    return await copyFileExclusive(source, destDir);
   });
 }
