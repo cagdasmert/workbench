@@ -36,6 +36,7 @@ export function Thumb({
   name,
   mime,
   selected,
+  checked,
   onClick,
 }: {
   ctx: PluginContext;
@@ -43,7 +44,8 @@ export function Thumb({
   name: string;
   mime: string;
   selected: boolean;
-  onClick: () => void;
+  checked: boolean;
+  onClick: (e: { metaKey: boolean; shiftKey: boolean }) => void;
 }) {
   const ref = useRef<HTMLButtonElement>(null);
   const [url, setUrl] = useState<string | null>(null);
@@ -94,7 +96,11 @@ export function Thumb({
       type="button"
       onClick={onClick}
       title={name}
-      style={{ ...styles.tile, ...(selected ? styles.tileSelected : {}) }}
+      style={{
+        ...styles.tile,
+        ...(selected ? styles.tileSelected : {}),
+        ...(checked ? styles.tileChecked : {}),
+      }}
     >
       <span style={styles.frame}>
         {url !== null && <img src={url} alt={name} style={styles.img} />}
@@ -123,6 +129,9 @@ const styles: Record<string, React.CSSProperties> = {
   tileSelected: {
     borderColor: 'var(--accent-fg, #2563eb)',
     background: 'var(--accent-bg, rgba(59,130,246,0.14))',
+  },
+  tileChecked: {
+    boxShadow: 'inset 0 0 0 2px var(--accent-fg, #2563eb)',
   },
   frame: {
     display: 'grid',

@@ -62,6 +62,8 @@ function ImagePanel({ ctx }: { ctx: PanelContext }) {
   const [error, setError] = useState<string | null>(null);
   const [zoom, setZoom] = useState(1);
   const [dimensions, setDimensions] = useState('');
+  const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  const anchorRef = useRef<number | null>(null);
 
   const rootRef = useRef<HTMLDivElement>(null);
   const urlRef = useRef<string | null>(shown?.url ?? null);
@@ -117,10 +119,47 @@ function ImagePanel({ ctx }: { ctx: PanelContext }) {
       setIndex(-1);
       revoke();
       setShown(null);
+      setSelected(new Set());
+      anchorRef.current = null;
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
     }
   }, [ctx, revoke]);
+
+  /**
+   * Finder's selection grammar: plain click replaces, cmd toggles, shift extends
+   * from the last plain click. The anchor is the last non-shift click, which is
+   * why it is a ref rather than derived from `index`.
+   */
+  const selectAt = useCallback((i: number, e: { metaKey: boolean; shiftKey: boolean }) => {
+    const entry = images[i];
+    if (entry === undefined) return;
+
+    setSelected((prev) => {
+      if (e.shiftKey && anchorRef.current !== null) {
+        const [lo, hi] = anchorRef.current < i
+          ? [anchorRef.current, i]
+          : [i, anchorRef.current];
+        const next = new Set(prev);
+        for (let k = lo; k <= hi; k += 1) {
+          const path = images[k]?.path;
+          if (path !== undefined) next.add(path);
+        }
+        return next;
+      }
+
+      if (e.metaKey) {
+        const next = new Set(prev);
+        if (next.has(entry.path)) next.delete(entry.path);
+        else next.add(entry.path);
+        anchorRef.current = i;
+        return next;
+      }
+
+      anchorRef.current = i;
+      return new Set([entry.path]);
+    });
+  }, [images]);
 
   // Open the first image once a folder has been listed.
   useEffect(() => {
@@ -142,8 +181,11 @@ function ImagePanel({ ctx }: { ctx: PanelContext }) {
     } else if (e.key === 'End') {
       e.preventDefault();
       void show(images.length - 1);
+    } else if (e.key === 'a' && e.metaKey) {
+      e.preventDefault();
+      setSelected(new Set(images.map((entry) => entry.path)));
     }
-  }, [step, show, images.length]);
+  }, [step, show, images.length, images]);
 
   useEffect(() => { rootRef.current?.focus(); }, []);
 
@@ -204,7 +246,8 @@ function ImagePanel({ ctx }: { ctx: PanelContext }) {
           <div style={styles.strip}>
             <div style={styles.stripHead}>
               {images.length} image{images.length === 1 ? '' : 's'}
-              {skipped > 0 && <span style={styles.skipped}>{skipped} skipped</span>}
+              {selected.size > 0 && <span style={styles.skipped}>{selected.size} selected</span>}
+              {selected.size === 0 && skipped > 0 && <span style={styles.skipped}>{skipped} skipped</span>}
             </div>
             <div style={styles.grid}>
               {images.map((entry, i) => (
@@ -215,7 +258,8 @@ function ImagePanel({ ctx }: { ctx: PanelContext }) {
                   name={entry.name}
                   mime={mimeFor(entry.name) ?? 'application/octet-stream'}
                   selected={i === index}
-                  onClick={() => void show(i)}
+                  checked={selected.has(entry.path)}
+                  onClick={(e) => { selectAt(i, e); void show(i); }}
                 />
               ))}
             </div>
