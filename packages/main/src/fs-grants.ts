@@ -1,4 +1,5 @@
 import { realpath } from 'node:fs/promises';
+import { realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 
@@ -80,30 +81,51 @@ export async function assertReadable(target: string): Promise<string> {
 }
 
 /**
- * Places a write grant is refused outright, even if the user picks them in the
- * dialog. The grant set is the real control; this is the backstop for a
- * mis-clicked or nudged dialog.
+ * `real` on entry is always the output of `realpath` — but the deny-list
+ * entries below are literal strings, and on macOS several of them differ from
+ * their resolved form (`/etc` -> `/private/etc`, `/tmp` -> `/private/tmp`, and
+ * `home` itself if it — or `~/Library/Application Support` — sits behind a
+ * symlink). Comparing a resolved path against an unresolved literal fails
+ * open, so every entry is matched in both forms.
  *
- * The first entry is the one that matters. The app loads plugins from that
- * directory, so a plugin that can write there can install another plugin that
- * runs on next launch, with no prompt. The rest are the same class of problem
- * with a smaller blast radius: login persistence, credentials, shell startup.
- *
- * `home` is a parameter so the list is testable without depending on whose
- * machine the suite runs on.
+ * A literal that does not exist on this machine (e.g. `/etc` inside a CI
+ * sandbox, or a `home` that was never created on disk) must not throw —
+ * `realpathSync` fails on a missing path, so that case just falls back to the
+ * literal form, which still matches literally-equal input.
  */
-export function deniedWriteReason(real: string, home: string = homedir()): string | null {
-  if (real === home) {
-    return 'the home directory itself is too broad a write grant — pick a folder inside it';
+function resolveOrSelf(literal: string): string {
+  try {
+    return realpathSync(literal);
+  } catch {
+    return literal;
   }
+}
 
-  // Anything *containing* the home directory is broader still — this covers
-  // both `/` and `/Users` without naming either.
-  if (isInside(real, home)) {
-    return 'above the home directory, which is far too broad a write grant';
-  }
+interface DeniedEntry {
+  literal: string;
+  resolved: string;
+  description: string;
+}
 
-  const denied: Array<[string, string]> = [
+interface ResolvedTable {
+  home: string;
+  homeResolved: string;
+  denied: DeniedEntry[];
+}
+
+/**
+ * Resolving ~12 paths with a sync syscall on every call would be wasteful —
+ * `copyFile` runs `assertWritableDir`, and therefore this, once per file
+ * copied. Cache the resolved table and rebuild only when `home` changes from
+ * the cached one. Tests pass a fake `home`, so keying on it (rather than on
+ * nothing) is what keeps the cache from papering over a real bug in the tests.
+ */
+let cached: ResolvedTable | undefined;
+
+function tableFor(home: string): ResolvedTable {
+  if (cached !== undefined && cached.home === home) return cached;
+
+  const literals: Array<[string, string]> = [
     [`${home}/Library/Application Support/Workbench`, 'the Workbench plugin directory'],
     [`${home}/Library/LaunchAgents`, 'a login-item directory'],
     ['/Library/LaunchAgents', 'a login-item directory'],
@@ -120,9 +142,50 @@ export function deniedWriteReason(real: string, home: string = homedir()): strin
     ['/sbin', 'a system directory'],
     ['/etc', 'a system directory'],
   ];
+  const denied: DeniedEntry[] = literals.map(([literal, description]) => ({
+    literal,
+    resolved: resolveOrSelf(literal),
+    description,
+  }));
 
-  for (const [prefix, description] of denied) {
-    if (real === prefix || isInside(prefix, real)) return description;
+  cached = { home, homeResolved: resolveOrSelf(home), denied };
+  return cached;
+}
+
+/** Both the literal and symlink-resolved forms of `prefix` are checked. */
+function realIsPrefixedBy(real: string, literal: string, resolved: string): boolean {
+  return real === literal || real === resolved
+    || isInside(literal, real) || isInside(resolved, real);
+}
+
+/**
+ * A write grant to these places is refused outright, even if the user picks
+ * them in the dialog. The grant set is the real control; this is the backstop
+ * for a mis-clicked or nudged dialog.
+ *
+ * The first entry is the one that matters. The app loads plugins from that
+ * directory, so a plugin that can write there can install another plugin that
+ * runs on next launch, with no prompt. The rest are the same class of problem
+ * with a smaller blast radius: login persistence, credentials, shell startup.
+ *
+ * `home` is a parameter so the list is testable without depending on whose
+ * machine the suite runs on.
+ */
+export function deniedWriteReason(real: string, home: string = homedir()): string | null {
+  const table = tableFor(home);
+
+  if (real === table.home || real === table.homeResolved) {
+    return 'the home directory itself is too broad a write grant — pick a folder inside it';
+  }
+
+  // Anything *containing* the home directory is broader still — this covers
+  // both `/` and `/Users` without naming either.
+  if (isInside(real, table.home) || isInside(real, table.homeResolved)) {
+    return 'above the home directory, which is far too broad a write grant';
+  }
+
+  for (const { literal, resolved, description } of table.denied) {
+    if (realIsPrefixedBy(real, literal, resolved)) return description;
   }
   return null;
 }

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtemp, mkdir, realpath, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import {
@@ -176,6 +176,51 @@ describe('deniedWriteReason', () => {
   });
 
   it('still allows an external volume', () => {
+    expect(deniedWriteReason('/Volumes/Photos/2026', home)).toBeNull();
+  });
+
+  // Regression coverage for the realpath/literal mismatch: every call site
+  // passes `real` already through `realpath`, but the table above is literal
+  // strings. On macOS `/etc` resolves to `/private/etc`, and if `home` (or a
+  // path under it) sits behind a symlink, every `${home}/…` entry is a literal
+  // that no resolved input can ever match — including the plugin directory,
+  // the one entry the whole list exists for.
+
+  it('denies the resolved form of a literal entry, not just the literal itself', () => {
+    // /etc is a symlink to /private/etc on macOS; deniedWriteReason must catch
+    // input that already went through realpath and arrives as the resolved form.
+    expect(deniedWriteReason('/private/etc', home)).not.toBeNull();
+    expect(deniedWriteReason('/etc', home)).not.toBeNull();
+  });
+
+  it('denies the plugin directory when home itself is reached through a symlink', async () => {
+    const realHome = await realpath(await mkdtemp(path.join(tmpdir(), 'wb-realhome-')));
+    const linkHome = path.join(tmpdir(), `wb-linkhome-${process.pid}-${Date.now()}`);
+    const pluginsReal = path.join(
+      realHome, 'Library', 'Application Support', 'Workbench', 'plugins',
+    );
+    await mkdir(pluginsReal, { recursive: true });
+    await symlink(realHome, linkHome);
+
+    try {
+      // As fs-broker.ts and assertWritableDir do: resolve the picked path
+      // through realpath before checking it. Because linkHome -> realHome,
+      // this resolves straight through to the real, non-symlinked path.
+      const resolvedPluginsPath = await realpath(
+        path.join(linkHome, 'Library', 'Application Support', 'Workbench', 'plugins'),
+      );
+
+      expect(deniedWriteReason(resolvedPluginsPath, linkHome)).not.toBeNull();
+    } finally {
+      await rm(linkHome);
+      await rm(realHome, { recursive: true, force: true });
+    }
+  });
+
+  it('does not over-deny: /private, /var and a temp-dir path stay allowed', () => {
+    expect(deniedWriteReason('/private', home)).toBeNull();
+    expect(deniedWriteReason('/var/folders/x', home)).toBeNull();
+    expect(deniedWriteReason(path.join(tmpdir(), 'wb-export'), home)).toBeNull();
     expect(deniedWriteReason('/Volumes/Photos/2026', home)).toBeNull();
   });
 });
