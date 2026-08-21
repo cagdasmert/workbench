@@ -1290,6 +1290,9 @@ Add below `selectAt`:
       return;
     }
     if (dir === undefined) return;
+    // `dir` is a `let`, so TypeScript widens it back to `string | undefined`
+    // inside the worker closures below. Bind it to a const to keep the narrowing.
+    const destination = dir;
 
     let copied = 0;
     let renamed = 0;
@@ -1300,7 +1303,7 @@ Add below `selectAt`:
     const workers = Array.from({ length: Math.min(4, queue.length) }, async () => {
       for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
         try {
-          const result = await ctx.plugin.fs.copyFile(next, dir);
+          const result = await ctx.plugin.fs.copyFile(next, destination);
           copied += 1;
           if (result.renamed) renamed += 1;
         } catch (err: unknown) {
@@ -1310,9 +1313,9 @@ Add below `selectAt`:
     });
     await Promise.all(workers);
 
-    if (copied > 0) await rememberFolder(dir);
+    if (copied > 0) await rememberFolder(destination);
 
-    const where = dir.slice(dir.lastIndexOf('/') + 1);
+    const where = destination.slice(destination.lastIndexOf('/') + 1);
     const parts = [`${copied} copied to ${where}`];
     if (renamed > 0) parts.push(`${renamed} renamed`);
     if (failures.length > 0) parts.push(`${failures.length} failed`);
