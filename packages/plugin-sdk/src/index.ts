@@ -1,12 +1,14 @@
 /**
- * @workbench/plugin-sdk 1.0 — FROZEN.
+ * @workbench/plugin-sdk 1.7.
  *
  * Earned, not declared: mermaid, image, and JSON viewers were all built against
- * this surface without a single change to `packages/shell` (decision D8).
+ * this surface without a single change to `packages/shell` (decision D8), and
+ * the freeze held from M1 through M4 on that evidence.
  *
- * From here, changes to `PluginContext` are versioned decisions, not drive-by
- * edits. Additive methods are a minor bump; changing or removing anything below
- * is a major bump plus a migration note in the architecture decision log.
+ * The contract is open again, additively: existing signatures do not move.
+ * Changes to `PluginContext` are still versioned decisions, not drive-by edits
+ * — additive methods are a minor bump, but altering or removing anything below
+ * is still a major bump plus a migration note in the architecture decision log.
  */
 
 // ─── lifecycle ───────────────────────────────────────────────

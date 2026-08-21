@@ -354,7 +354,11 @@ function ImagePanel({ ctx }: { ctx: PanelContext }) {
               style={styles.grid}
               onContextMenu={(e) => {
                 e.preventDefault();
-                setMenuAt({ x: e.clientX, y: e.clientY });
+                // Right-clicking empty grid padding with nothing selected must not
+                // record coordinates — the menu only renders when selected.size > 0,
+                // but a stale menuAt from here would reappear at the old position
+                // the next time a thumbnail click brought selected.size back above 0.
+                if (selected.size > 0) setMenuAt({ x: e.clientX, y: e.clientY });
               }}
             >
               {images.map((entry, i) => (

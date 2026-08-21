@@ -1007,10 +1007,15 @@ install another plugin that runs on next launch, with no prompt — a one-sessio
 permanent. Hence a destination deny-list, where that path is the entry that matters and
 LaunchAgents, `.ssh` and the shell dotfiles are the same class with less blast radius. The
 home directory itself is refused as too broad; folders inside it are fine. The deny-list also
-refuses anything above the home directory, plus `/Library`, `/usr`, `/bin`, `/sbin`, and `/etc`
-— preventing both absolute escapes and system directories. Deliberately allowed: `/private` and
-`/var`, because `os.tmpdir()` resolves under `/private/var` on macOS, and `/Volumes`, because
-an external drive is a normal place to copy photos to.
+refuses anything above the home directory, plus `/Applications`, `/System`, `/Library`, `/usr`,
+`/bin`, `/sbin`, and `/etc` — preventing both absolute escapes and system directories.
+Deliberately allowed: `/private` and `/var`, because `os.tmpdir()` resolves under `/private/var`
+on macOS, and `/Volumes`, because an external drive is a normal place to copy photos to.
+
+**Not implemented: the spec's "running app bundle" entry.** Only `/Applications` is covered, so
+an app run from `~/Applications` or `~/Downloads` has an unprotected bundle. Recorded as a
+conscious gap, not an oversight — the app itself is not expected to run from either place, and
+closing it needs the running executable's own path, not a fixed list.
 
 **`fs` gained its first per-plugin check.** Reads are still session-global — any loaded plugin
 can read a path another was granted, which is a known gap. Writes are not: `fs:write:user-selected`

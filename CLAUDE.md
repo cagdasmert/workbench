@@ -8,8 +8,8 @@ for the contract staying stable, not for shipping a viewer faster.
 
 ## Current milestone: M4 — the last one
 
-M0–M3 are **done**, plus `tools/create-plugin`. Six plugins, 29 tests. The SDK has held `1.0`'s
-shape since M1 and is now `1.6` through six additive bumps — no line of the panel API,
+M0–M3 are **done**, plus `tools/create-plugin`. Six plugins, 85 tests. The SDK has held `1.0`'s
+shape since M1 and is now `1.7` through seven additive bumps — no line of the panel API,
 lifecycle, `Disposable`, or the core manifest shape has changed in that time.
 
 **The contract is open again, additively** (decided 2026-08-21, superseding the M1 freeze). The
