@@ -972,3 +972,62 @@ concurrency. Neither is premature: the naive version is unusable on any real pho
 
 **Contract impact:** additive — `pickDirectory`, `readDir`, `DirEntry`. `pickFile` is unchanged
 and still works, so nothing that used it needed touching.
+
+---
+
+## 31 · The first write, and the flag that keeps it inside its grant
+
+**Feature:** image viewer copy-to-folder · **Verdict:** SDK 1.6 → 1.7, additive — and the end
+of the M1 contract freeze
+
+Copying files cannot be done inside a plugin: the `fs` surface was read-only end to end. This
+adds `pickDirectoryForWrite` and `copyFile`, the first write path in the app.
+
+**Write grants are a separate set from read grants.** Reusing `grantedDirs` would have been
+fewer moving parts and would have silently made every folder the user opened to *browse* into a
+folder any plugin could *write to*. Entry 30 established that picking a folder is a bigger
+promise than picking a file; picking a folder to write to is bigger still, and gets its own set.
+
+**`COPYFILE_EXCL` is a security control, not a data-safety nicety.** This was verified rather
+than assumed, and the result was worse than expected:
+
+| destination is… | plain copy | with `COPYFILE_EXCL` |
+|---|---|---|
+| a symlink to a file outside the grant | **followed — the outside file is destroyed** | refused `EEXIST` |
+| a dangling symlink outside the grant | **followed — a file is created outside the grant** | refused `EEXIST` |
+
+A symlink planted at the destination filename turns a copy into a write anywhere on disk.
+`O_CREAT|O_EXCL` fails on an existing path including a symlink, even a dangling one, which is
+what closes it. So the auto-rename loop must never fall back to a non-exclusive copy on its last
+attempt — it gives up instead. Both cases are asserted in `fs-copy.test.ts`.
+
+**A write primitive can reach the plugin directory.** M4 loads plugins from
+`~/Library/Application Support/Workbench/plugins/`. A write that can target it lets a plugin
+install another plugin that runs on next launch, with no prompt — a one-session bug becomes
+permanent. Hence a destination deny-list, where that path is the entry that matters and
+LaunchAgents, `.ssh` and the shell dotfiles are the same class with less blast radius. The
+home directory itself is refused as too broad; folders inside it are fine. The deny-list also
+refuses anything above the home directory, plus `/Applications`, `/System`, `/Library`, `/usr`,
+`/bin`, `/sbin`, and `/etc` — preventing both absolute escapes and system directories.
+Deliberately allowed: `/private` and `/var`, because `os.tmpdir()` resolves under `/private/var`
+on macOS, and `/Volumes`, because an external drive is a normal place to copy photos to.
+
+**Not implemented: the spec's "running app bundle" entry.** Only `/Applications` is covered, so
+an app run from `~/Applications` or `~/Downloads` has an unprotected bundle. Recorded as a
+conscious gap, not an oversight — the app itself is not expected to run from either place, and
+closing it needs the running executable's own path, not a fixed list.
+
+**`fs` gained its first per-plugin check.** Reads are still session-global — any loaded plugin
+can read a path another was granted, which is a known gap. Writes are not: `fs:write:user-selected`
+is checked per plugin against the manifests, the way `net:fetch:<host>` already was.
+
+**Known limitation, recorded rather than hidden.** The destination directory is resolved at
+check time and used at copy time. A local attacker able to swap it for a symlink in between
+could redirect the write. Closing it needs directory-handle-relative writes, which Node does not
+expose. Accepted for a local single-user app.
+
+**⌘A had to be shared with the shell.** The Edit menu binds ⌘A app-wide through `role: 'editMenu'`, and macOS resolves a native key equivalent outside the DOM, so a plugin's `preventDefault` cannot reliably claim it. Rather than guess which handler wins, the strip is `user-select: none` — whichever fires, the visible result is the plugin's selection and nothing else. A real fix would be a `before-input-event` interceptor in the shell, which is a shell change and not this feature's to make.
+
+**Contract impact:** additive. `pickDirectoryForWrite`, `copyFile`, `CopyResult`. Nothing
+existing changed shape — but the freeze that held from M1 to M4 is now formally over, replaced
+by "additive minor bumps, existing signatures immovable" (CLAUDE.md, 2026-08-21).

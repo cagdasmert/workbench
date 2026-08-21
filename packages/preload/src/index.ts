@@ -18,6 +18,10 @@ contextBridge.exposeInMainWorld('workbenchHost', {
   pickDirectory: () => ipcRenderer.invoke('fs:pickDirectory'),
   readDir: (path: string) => ipcRenderer.invoke('fs:readDir', path),
   readFile: (path: string) => ipcRenderer.invoke('fs:readFile', path),
+  pickDirectoryForWrite: (pluginId: string, defaultPath?: string) =>
+    ipcRenderer.invoke('fs:pickDirectoryForWrite', pluginId, defaultPath),
+  copyFile: (pluginId: string, sourcePath: string, destDir: string) =>
+    ipcRenderer.invoke('fs:copyFile', pluginId, sourcePath, destDir),
 
   netFetch: (pluginId: string, url: string, init?: unknown) =>
     ipcRenderer.invoke('net:fetch', pluginId, url, init),

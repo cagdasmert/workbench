@@ -1,5 +1,6 @@
 import type {
-  DirEntry, FileFilter, JsonValue, NetRequestInit, NetResponse, PluginManifest, SettingsSchema,
+  CopyResult, DirEntry, FileFilter, JsonValue, NetRequestInit, NetResponse, PluginManifest,
+  SettingsSchema,
 } from '@workbench/plugin-sdk';
 
 /**
@@ -15,6 +16,8 @@ export interface WorkbenchHostBridge {
   pickDirectory(): Promise<string | undefined>;
   readDir(path: string): Promise<DirEntry[]>;
   readFile(path: string): Promise<Uint8Array<ArrayBuffer>>;
+  pickDirectoryForWrite(pluginId: string, defaultPath?: string): Promise<string | undefined>;
+  copyFile(pluginId: string, sourcePath: string, destDir: string): Promise<CopyResult>;
   netFetch(pluginId: string, url: string, init?: NetRequestInit): Promise<NetResponse>;
   session(): Promise<{ activePanelId?: string }>;
   setSessionPanel(panelId: string | null): Promise<void>;
