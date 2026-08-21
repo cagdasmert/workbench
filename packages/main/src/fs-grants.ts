@@ -97,6 +97,12 @@ export function deniedWriteReason(real: string, home: string = homedir()): strin
     return 'the home directory itself is too broad a write grant — pick a folder inside it';
   }
 
+  // Anything *containing* the home directory is broader still — this covers
+  // both `/` and `/Users` without naming either.
+  if (isInside(real, home)) {
+    return 'above the home directory, which is far too broad a write grant';
+  }
+
   const denied: Array<[string, string]> = [
     [`${home}/Library/Application Support/Workbench`, 'the Workbench plugin directory'],
     [`${home}/Library/LaunchAgents`, 'a login-item directory'],
@@ -108,6 +114,11 @@ export function deniedWriteReason(real: string, home: string = homedir()): strin
     [`${home}/.config`, 'a configuration directory'],
     ['/Applications', 'the applications directory'],
     ['/System', 'a system directory'],
+    ['/Library', 'a system library directory'],
+    ['/usr', 'a system directory'],
+    ['/bin', 'a system directory'],
+    ['/sbin', 'a system directory'],
+    ['/etc', 'a system directory'],
   ];
 
   for (const [prefix, description] of denied) {

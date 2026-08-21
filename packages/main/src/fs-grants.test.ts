@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtemp, mkdir, realpath, symlink, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import {
   assertReadable,
@@ -120,6 +120,14 @@ describe('assertWritableDir', () => {
     await expect(assertWritableDir(path.join(inside, 'escape')))
       .rejects.toThrow(/not granted for writing/);
   });
+
+  it('refuses a deny-listed directory even when it has been granted', async () => {
+    const plugins = path.join(homedir(), 'Library', 'Application Support', 'Workbench', 'plugins');
+    await mkdir(plugins, { recursive: true });
+    grantWriteDir(plugins);
+
+    await expect(assertWritableDir(plugins)).rejects.toThrow(/Workbench plugin directory/);
+  });
 });
 
 describe('deniedWriteReason', () => {
@@ -153,6 +161,21 @@ describe('deniedWriteReason', () => {
   });
 
   it('allows an ordinary folder', () => {
+    expect(deniedWriteReason('/Volumes/Photos/2026', home)).toBeNull();
+  });
+
+  it('denies directories above the home directory', () => {
+    expect(deniedWriteReason('/Users', home)).toMatch(/above the home directory/);
+    expect(deniedWriteReason('/', home)).toMatch(/above the home directory/);
+  });
+
+  it('denies system directories', () => {
+    expect(deniedWriteReason('/Library', home)).not.toBeNull();
+    expect(deniedWriteReason('/usr/local', home)).not.toBeNull();
+    expect(deniedWriteReason('/etc', home)).not.toBeNull();
+  });
+
+  it('still allows an external volume', () => {
     expect(deniedWriteReason('/Volumes/Photos/2026', home)).toBeNull();
   });
 });
