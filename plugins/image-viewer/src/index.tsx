@@ -182,10 +182,14 @@ function ImagePanel({ ctx }: { ctx: PanelContext }) {
       e.preventDefault();
       void show(images.length - 1);
     } else if (e.key === 'a' && e.metaKey) {
+      // The shell's Edit menu also binds ⌘A (menu.ts, `role: 'editMenu'`), and a
+      // native key equivalent is resolved outside the DOM. We cannot suppress it
+      // from here, so the strip is `user-select: none` instead — whichever handler
+      // wins, the visible result is our selection and nothing else.
       e.preventDefault();
       setSelected(new Set(images.map((entry) => entry.path)));
     }
-  }, [step, show, images.length, images]);
+  }, [step, show, images]);
 
   useEffect(() => { rootRef.current?.focus(); }, []);
 
@@ -319,6 +323,7 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: 'column',
     borderLeft: '1px solid var(--chrome-border, #d4d4d8)',
     background: 'var(--workspace-bg, #fff)',
+    userSelect: 'none',
   },
   stripHead: {
     display: 'flex',
@@ -339,6 +344,7 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 2,
     padding: 6,
     alignContent: 'start',
+    userSelect: 'none',
   },
   error: {
     margin: 16,
