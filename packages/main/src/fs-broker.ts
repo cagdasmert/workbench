@@ -2,46 +2,9 @@ import { dialog, ipcMain, type BrowserWindow } from 'electron';
 import { readFile, readdir, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { DirEntry, FileFilter } from '@workbench/plugin-sdk';
-
-/**
- * Paths the user explicitly chose through a file dialog, this session only.
- *
- * This is what makes the declared permission `fs:read:user-selected` mean
- * something. Without it, `fs:readFile` over the bridge is an arbitrary-file-read
- * primitive handed to the renderer — the exact thing architecture §9 says must
- * never cross. Nothing is persisted; a restart starts from zero grants.
- */
-const grantedFiles = new Set<string>();
-
-/**
- * Directories the user chose. Picking a folder grants everything inside it —
- * a broader grant than picking a file, and the only way a folder browser can
- * work at all.
- *
- * Both sets hold **symlink-resolved** paths, and every read resolves before
- * checking. Without that, a symlink inside a granted folder pointing at
- * ~/.ssh would be readable: the string would sit under the granted prefix while
- * the actual file does not.
- */
-const grantedDirs = new Set<string>();
-
-async function assertReadable(target: string): Promise<string> {
-  let real: string;
-  try {
-    real = await realpath(target);
-  } catch {
-    throw new Error(`fs:read denied — "${target}" does not exist`);
-  }
-
-  if (grantedFiles.has(real)) return real;
-  for (const dir of grantedDirs) {
-    const rel = path.relative(dir, real);
-    if (rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel)) return real;
-  }
-  throw new Error(
-    `fs:read denied — "${target}" is not inside anything granted this session`,
-  );
-}
+import {
+  assertReadable, grantFile, grantReadDir, isReadDirGranted,
+} from './fs-grants.js';
 
 /** The renderer is a local RPC boundary. Treat every argument as hostile. */
 function sanitizeFilters(raw: unknown): FileFilter[] | undefined {
@@ -79,7 +42,7 @@ export function registerFsBroker(getWindow: () => BrowserWindow | null): void {
     const picked = result.canceled ? undefined : result.filePaths[0];
     if (picked === undefined) return undefined;
 
-    grantedFiles.add(await realpath(picked));   // the dialog IS the grant
+    grantFile(await realpath(picked));   // the dialog IS the grant
     return picked;
   });
 
@@ -93,7 +56,7 @@ export function registerFsBroker(getWindow: () => BrowserWindow | null): void {
     const picked = result.canceled ? undefined : result.filePaths[0];
     if (picked === undefined) return undefined;
 
-    grantedDirs.add(await realpath(picked));
+    grantReadDir(await realpath(picked));
     return picked;
   });
 
@@ -105,7 +68,7 @@ export function registerFsBroker(getWindow: () => BrowserWindow | null): void {
     const real = await realpath(rawPath).catch(() => {
       throw new Error(`fs:readDir — "${rawPath}" does not exist`);
     });
-    if (!grantedDirs.has(real)) await assertReadable(rawPath);
+    if (!isReadDirGranted(real)) await assertReadable(rawPath);
 
     const entries = await readdir(real, { withFileTypes: true });
     const out: DirEntry[] = [];
