@@ -8,11 +8,16 @@ for the contract staying stable, not for shipping a viewer faster.
 
 ## Current milestone: M4 — the last one
 
-M0–M3 are **done**, plus `tools/create-plugin`. Six plugins, 29 tests. The SDK was frozen at
-`1.0` after M1 and is now `1.5` through five additive bumps — no line of the panel API,
-lifecycle, `Disposable`, or the core manifest shape has changed since the freeze.
+M0–M3 are **done**, plus `tools/create-plugin`. Six plugins, 29 tests. The SDK has held `1.0`'s
+shape since M1 and is now `1.6` through six additive bumps — no line of the panel API,
+lifecycle, `Disposable`, or the core manifest shape has changed in that time.
 
-**The contract is frozen. Treat `packages/plugin-sdk/src/index.ts` as closed.**
+**The contract is open again, additively** (decided 2026-08-21, superseding the M1 freeze). The
+freeze did its job: six plugins were built without one breaking change, which is the evidence
+the shape is right. New capability may now be added as a **minor bump plus a change-log entry**.
+What has *not* changed — existing signatures do not move, and altering or removing anything is
+still a major bump and a decision-log entry. Additive is licence to grow the surface, not to
+churn it, and every addition still answers to the invariants below.
 
 M4 makes it a real application rather than a dev-server experiment:
 
@@ -24,6 +29,11 @@ M4 makes it a real application rather than a dev-server experiment:
 2. **Session restore.** Reopen the last panel and its plugin on launch.
 3. **Packaging.** `.app` bundle, ad-hoc signed (`codesign -s -`), launches from
    `/Applications`. `electron-builder` gets installed here — it was deliberately left out of M0.
+4. **Copy to folder (image viewer).** Multi-select images and copy them out, with a recent-
+   folders list. This brings the **first write primitive** into the stack: SDK `1.7`,
+   `pickDirectoryForWrite` + `copyFile`, an `fs:write:user-selected` scope, and a write-grant set
+   kept strictly separate from the read one. Design:
+   `docs/superpowers/specs/2026-08-21-image-viewer-copy-to-folder-design.md`.
 
 Keep appending to `docs/m1-shell-change-log.md`.
 
@@ -34,6 +44,14 @@ Keep appending to `docs/m1-shell-change-log.md`.
   fall back to bundled ones. Getting this wrong means a `.app` that opens with no plugins.
 - **The preload path** is resolved relative to `__dirname` and must survive `asar` packing.
 - **`storage` is scoped, not isolated** — unchanged, and now shipping.
+- **A write primitive can reach the plugin directory.** M4 loads plugins from
+  `~/Library/Application Support/Workbench/plugins/`, so any `fs` write able to target it is an
+  install path for code that runs on next launch, with no prompt. It is deny-listed in the
+  broker; keep it that way.
+- **`copyFile` must always pass `COPYFILE_EXCL`.** Not for tidiness. Without it, a symlink
+  planted at the destination filename is followed and the write lands *outside* the grant —
+  verified on this machine, not assumed. The auto-rename loop must never fall back to a
+  non-exclusive copy.
 
 ## Invariants — never violate without asking
 
