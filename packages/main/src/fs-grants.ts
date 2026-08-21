@@ -1,4 +1,5 @@
 import { realpath } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import path from 'node:path';
 
 /**
@@ -43,10 +44,22 @@ export function isReadDirGranted(real: string): boolean {
   return grantedReadDirs.has(real);
 }
 
+/**
+ * Directories the user chose **for writing**, held separately from the read
+ * grants on purpose: opening a photo folder to browse it must never make that
+ * folder writable. Session-only, symlink-resolved, exactly like the read sets.
+ */
+const grantedWriteDirs = new Set<string>();
+
+export function grantWriteDir(real: string): void {
+  grantedWriteDirs.add(real);
+}
+
 /** Tests only. Grants are session state; nothing in the app clears them. */
 export function resetGrants(): void {
   grantedFiles.clear();
   grantedReadDirs.clear();
+  grantedWriteDirs.clear();
 }
 
 export async function assertReadable(target: string): Promise<string> {
@@ -64,4 +77,64 @@ export async function assertReadable(target: string): Promise<string> {
   throw new Error(
     `fs:read denied — "${target}" is not inside anything granted this session`,
   );
+}
+
+/**
+ * Places a write grant is refused outright, even if the user picks them in the
+ * dialog. The grant set is the real control; this is the backstop for a
+ * mis-clicked or nudged dialog.
+ *
+ * The first entry is the one that matters. The app loads plugins from that
+ * directory, so a plugin that can write there can install another plugin that
+ * runs on next launch, with no prompt. The rest are the same class of problem
+ * with a smaller blast radius: login persistence, credentials, shell startup.
+ *
+ * `home` is a parameter so the list is testable without depending on whose
+ * machine the suite runs on.
+ */
+export function deniedWriteReason(real: string, home: string = homedir()): string | null {
+  if (real === home) {
+    return 'the home directory itself is too broad a write grant — pick a folder inside it';
+  }
+
+  const denied: Array<[string, string]> = [
+    [`${home}/Library/Application Support/Workbench`, 'the Workbench plugin directory'],
+    [`${home}/Library/LaunchAgents`, 'a login-item directory'],
+    ['/Library/LaunchAgents', 'a login-item directory'],
+    ['/Library/LaunchDaemons', 'a system daemon directory'],
+    [`${home}/.ssh`, 'an SSH credential directory'],
+    [`${home}/.aws`, 'a cloud credential directory'],
+    [`${home}/.gnupg`, 'a key directory'],
+    [`${home}/.config`, 'a configuration directory'],
+    ['/Applications', 'the applications directory'],
+    ['/System', 'a system directory'],
+  ];
+
+  for (const [prefix, description] of denied) {
+    if (real === prefix || isInside(prefix, real)) return description;
+  }
+  return null;
+}
+
+export async function assertWritableDir(target: string): Promise<string> {
+  let real: string;
+  try {
+    real = await realpath(target);
+  } catch {
+    throw new Error(`fs:write denied — "${target}" does not exist`);
+  }
+
+  const granted = grantedWriteDirs.has(real)
+    || [...grantedWriteDirs].some((dir) => isInside(dir, real));
+  if (!granted) {
+    throw new Error(
+      `fs:write denied — "${target}" is not granted for writing this session`,
+    );
+  }
+
+  const reason = deniedWriteReason(real);
+  if (reason !== null) {
+    throw new Error(`fs:write denied — "${target}" is ${reason}`);
+  }
+  return real;
 }

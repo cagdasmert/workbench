@@ -2,7 +2,15 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtemp, mkdir, realpath, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { assertReadable, grantFile, grantReadDir, resetGrants } from './fs-grants.js';
+import {
+  assertReadable,
+  assertWritableDir,
+  deniedWriteReason,
+  grantFile,
+  grantReadDir,
+  grantWriteDir,
+  resetGrants,
+} from './fs-grants.js';
 
 let root: string;
 
@@ -68,5 +76,83 @@ describe('assertReadable', () => {
   it('refuses a path that does not exist', async () => {
     await expect(assertReadable(path.join(root, 'nope.png')))
       .rejects.toThrow(/does not exist/);
+  });
+});
+
+describe('assertWritableDir', () => {
+  it('allows a directory granted for writing', async () => {
+    grantWriteDir(root);
+    await expect(assertWritableDir(root)).resolves.toBe(root);
+  });
+
+  it('allows a subdirectory of a write grant', async () => {
+    const nested = path.join(root, 'sub');
+    await mkdir(nested);
+    grantWriteDir(root);
+    await expect(assertWritableDir(nested)).resolves.toBe(nested);
+  });
+
+  it('refuses a directory that was only granted for reading', async () => {
+    grantReadDir(root);
+    await expect(assertWritableDir(root)).rejects.toThrow(/not granted for writing/);
+  });
+
+  it('refuses a directory that was never granted', async () => {
+    await expect(assertWritableDir(root)).rejects.toThrow(/not granted for writing/);
+  });
+
+  it('refuses a traversal that climbs out of a write grant', async () => {
+    const inside = path.join(root, 'inside');
+    await mkdir(inside);
+    grantWriteDir(inside);
+    await expect(assertWritableDir(path.join(inside, '..')))
+      .rejects.toThrow(/not granted for writing/);
+  });
+
+  it('refuses a symlinked directory that resolves outside the grant', async () => {
+    const inside = path.join(root, 'inside');
+    const outside = path.join(root, 'outside');
+    await mkdir(inside);
+    await mkdir(outside);
+    await symlink(outside, path.join(inside, 'escape'));
+    grantWriteDir(inside);
+
+    await expect(assertWritableDir(path.join(inside, 'escape')))
+      .rejects.toThrow(/not granted for writing/);
+  });
+});
+
+describe('deniedWriteReason', () => {
+  const home = '/Users/someone';
+
+  it('denies the plugin directory, which is an install path', () => {
+    const plugins = `${home}/Library/Application Support/Workbench/plugins`;
+    expect(deniedWriteReason(plugins, home)).toMatch(/Workbench/);
+  });
+
+  it('denies anything inside the plugin directory', () => {
+    const nested = `${home}/Library/Application Support/Workbench/plugins/evil`;
+    expect(deniedWriteReason(nested, home)).not.toBeNull();
+  });
+
+  it('denies login-item and credential directories', () => {
+    expect(deniedWriteReason(`${home}/Library/LaunchAgents`, home)).not.toBeNull();
+    expect(deniedWriteReason('/Library/LaunchDaemons', home)).not.toBeNull();
+    expect(deniedWriteReason(`${home}/.ssh`, home)).not.toBeNull();
+    expect(deniedWriteReason(`${home}/.aws`, home)).not.toBeNull();
+    expect(deniedWriteReason(`${home}/.config`, home)).not.toBeNull();
+  });
+
+  it('denies /Applications', () => {
+    expect(deniedWriteReason('/Applications', home)).not.toBeNull();
+  });
+
+  it('denies the home directory itself but allows folders inside it', () => {
+    expect(deniedWriteReason(home, home)).toMatch(/home directory/);
+    expect(deniedWriteReason(`${home}/Pictures/Exports`, home)).toBeNull();
+  });
+
+  it('allows an ordinary folder', () => {
+    expect(deniedWriteReason('/Volumes/Photos/2026', home)).toBeNull();
   });
 });
