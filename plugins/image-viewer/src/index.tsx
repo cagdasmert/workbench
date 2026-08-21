@@ -25,6 +25,9 @@ function formatBytes(n: number): string {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
+const RECENTS_KEY = 'recentCopyTargets';
+const MAX_RECENTS = 8;
+
 interface Shown {
   path: string;
   name: string;
@@ -63,7 +66,16 @@ function ImagePanel({ ctx }: { ctx: PanelContext }) {
   const [zoom, setZoom] = useState(1);
   const [dimensions, setDimensions] = useState('');
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  const [recents, setRecents] = useState<string[]>([]);
+  const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
   const anchorRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    void (async () => {
+      const saved = await ctx.plugin.storage.get<string[]>(RECENTS_KEY);
+      if (Array.isArray(saved)) setRecents(saved.filter((s) => typeof s === 'string'));
+    })();
+  }, [ctx]);
 
   const rootRef = useRef<HTMLDivElement>(null);
   const urlRef = useRef<string | null>(shown?.url ?? null);
@@ -161,6 +173,63 @@ function ImagePanel({ ctx }: { ctx: PanelContext }) {
     });
   }, [images]);
 
+  const rememberFolder = useCallback(async (dir: string) => {
+    const next = [dir, ...recents.filter((r) => r !== dir)].slice(0, MAX_RECENTS);
+    setRecents(next);
+    await ctx.plugin.storage.set(RECENTS_KEY, next);
+  }, [ctx, recents]);
+
+  /**
+   * `defaultPath` only positions the dialog, so a recent folder still costs one
+   * confirmation. That is deliberate: write grants never outlive the session
+   * that created them, and the dialog is the only thing that creates one.
+   */
+  const copyTo = useCallback(async (defaultPath?: string) => {
+    setMenuAt(null);
+    const paths = images.filter((e) => selected.has(e.path)).map((e) => e.path);
+    if (paths.length === 0) return;
+
+    let dir: string | undefined;
+    try {
+      dir = await ctx.plugin.fs.pickDirectoryForWrite(defaultPath);
+    } catch (err: unknown) {
+      await ctx.plugin.ui.notify(err instanceof Error ? err.message : String(err), 'error');
+      return;
+    }
+    if (dir === undefined) return;
+    // `dir` is a `let`, so TypeScript widens it back to `string | undefined`
+    // inside the worker closures below. Bind it to a const to keep the narrowing.
+    const destination = dir;
+
+    let copied = 0;
+    let renamed = 0;
+    const failures: string[] = [];
+
+    // Four at a time, the same cap the thumbnail loader uses.
+    const queue = [...paths];
+    const workers = Array.from({ length: Math.min(4, queue.length) }, async () => {
+      for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
+        try {
+          const result = await ctx.plugin.fs.copyFile(next, destination);
+          copied += 1;
+          if (result.renamed) renamed += 1;
+        } catch (err: unknown) {
+          failures.push(err instanceof Error ? err.message : String(err));
+        }
+      }
+    });
+    await Promise.all(workers);
+
+    if (copied > 0) await rememberFolder(destination);
+
+    const where = destination.slice(destination.lastIndexOf('/') + 1);
+    const parts = [`${copied} copied to ${where}`];
+    if (renamed > 0) parts.push(`${renamed} renamed`);
+    if (failures.length > 0) parts.push(`${failures.length} failed`);
+    await ctx.plugin.ui.notify(parts.join(' · '), failures.length > 0 ? 'warn' : 'info');
+    if (failures[0] !== undefined) ctx.plugin.log.warn('copy failed', failures[0]);
+  }, [ctx, images, selected, rememberFolder]);
+
   // Open the first image once a folder has been listed.
   useEffect(() => {
     if (images.length > 0 && index === -1) void show(0);
@@ -212,6 +281,19 @@ function ImagePanel({ ctx }: { ctx: PanelContext }) {
             <span style={styles.counter}>{Math.round(zoom * 100)}%</span>
             <button type="button" style={styles.button} onClick={() => setZoom((z) => z * 1.25)}>+</button>
             <button type="button" style={styles.button} onClick={() => setZoom(1)}>Reset</button>
+            <span style={styles.sep} />
+            <button
+              type="button"
+              style={styles.button}
+              disabled={selected.size === 0}
+              onClick={(e) => {
+                e.stopPropagation();
+                const r = e.currentTarget.getBoundingClientRect();
+                setMenuAt({ x: r.left, y: r.bottom + 4 });
+              }}
+            >
+              Copy to…
+            </button>
           </>
         )}
 
@@ -253,7 +335,13 @@ function ImagePanel({ ctx }: { ctx: PanelContext }) {
               {selected.size > 0 && <span style={styles.skipped}>{selected.size} selected</span>}
               {selected.size === 0 && skipped > 0 && <span style={styles.skipped}>{skipped} skipped</span>}
             </div>
-            <div style={styles.grid}>
+            <div
+              style={styles.grid}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                setMenuAt({ x: e.clientX, y: e.clientY });
+              }}
+            >
               {images.map((entry, i) => (
                 <Thumb
                   key={entry.path}
@@ -264,12 +352,67 @@ function ImagePanel({ ctx }: { ctx: PanelContext }) {
                   selected={i === index}
                   checked={selected.has(entry.path)}
                   onClick={(e) => { selectAt(i, e); void show(i); }}
+                  onContextMenu={() => {
+                    if (!selected.has(entry.path)) {
+                      selectAt(i, { metaKey: false, shiftKey: false });
+                    }
+                  }}
                 />
               ))}
             </div>
           </div>
         )}
       </div>
+
+      {menuAt !== null && selected.size > 0 && (
+        <CopyMenu
+          at={menuAt}
+          recents={recents}
+          count={selected.size}
+          onPick={(defaultPath) => void copyTo(defaultPath)}
+          onClose={() => setMenuAt(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function CopyMenu({
+  at, recents, count, onPick, onClose,
+}: {
+  at: { x: number; y: number };
+  recents: string[];
+  count: number;
+  onPick: (defaultPath?: string) => void;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const dismiss = () => onClose();
+    window.addEventListener('click', dismiss);
+    window.addEventListener('resize', dismiss);
+    return () => {
+      window.removeEventListener('click', dismiss);
+      window.removeEventListener('resize', dismiss);
+    };
+  }, [onClose]);
+
+  return (
+    <div style={{ ...styles.menu, left: at.x, top: at.y }} onClick={(e) => e.stopPropagation()}>
+      <button type="button" style={styles.menuItem} onClick={() => onPick(undefined)}>
+        Copy {count} image{count === 1 ? '' : 's'} to folder…
+      </button>
+      {recents.length > 0 && <div style={styles.menuSep} />}
+      {recents.map((dir) => (
+        <button
+          key={dir}
+          type="button"
+          style={styles.menuItem}
+          title={dir}
+          onClick={() => onPick(dir)}
+        >
+          {dir.slice(dir.lastIndexOf('/') + 1)}
+        </button>
+      ))}
     </div>
   );
 }
@@ -356,6 +499,33 @@ const styles: Record<string, React.CSSProperties> = {
     border: '1px solid currentColor',
     borderRadius: 6,
   },
+  menu: {
+    position: 'fixed',
+    zIndex: 10,
+    minWidth: 200,
+    padding: 4,
+    borderRadius: 8,
+    border: '1px solid var(--chrome-border, #d4d4d8)',
+    background: 'var(--workspace-bg, #fff)',
+    boxShadow: '0 8px 24px rgb(0 0 0 / 0.18)',
+    display: 'flex',
+    flexDirection: 'column',
+  },
+  menuItem: {
+    font: 'inherit',
+    fontSize: 12,
+    textAlign: 'left',
+    padding: '6px 10px',
+    borderRadius: 5,
+    border: 'none',
+    background: 'transparent',
+    color: 'inherit',
+    cursor: 'pointer',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  menuSep: { height: 1, margin: '4px 6px', background: 'var(--chrome-border, #d4d4d8)' },
 };
 
 export const plugin: Plugin = {

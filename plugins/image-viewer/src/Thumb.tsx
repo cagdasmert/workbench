@@ -38,6 +38,7 @@ export function Thumb({
   selected,
   checked,
   onClick,
+  onContextMenu,
 }: {
   ctx: PluginContext;
   path: string;
@@ -46,6 +47,7 @@ export function Thumb({
   selected: boolean;
   checked: boolean;
   onClick: (e: { metaKey: boolean; shiftKey: boolean }) => void;
+  onContextMenu?: () => void;
 }) {
   const ref = useRef<HTMLButtonElement>(null);
   const [url, setUrl] = useState<string | null>(null);
@@ -95,6 +97,7 @@ export function Thumb({
       ref={ref}
       type="button"
       onClick={onClick}
+      onContextMenu={onContextMenu}
       title={name}
       style={{
         ...styles.tile,
