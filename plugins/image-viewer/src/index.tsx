@@ -69,11 +69,22 @@ function ImagePanel({ ctx }: { ctx: PanelContext }) {
   const [recents, setRecents] = useState<string[]>([]);
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
   const anchorRef = useRef<number | null>(null);
+  // `recents` drives rendering; this ref is what `rememberFolder` computes from.
+  // Two copies can overlap — the dialog is modal but the copy loop is not — and
+  // a closed-over state value would let the second write clobber the first.
+  const recentsRef = useRef<string[]>([]);
+  const wroteRecentsRef = useRef(false);
 
   useEffect(() => {
     void (async () => {
       const saved = await ctx.plugin.storage.get<string[]>(RECENTS_KEY);
-      if (Array.isArray(saved)) setRecents(saved.filter((s) => typeof s === 'string'));
+      // A copy that finished before this resolved already holds the newer list.
+      if (wroteRecentsRef.current) return;
+      if (Array.isArray(saved)) {
+        const clean = saved.filter((s) => typeof s === 'string');
+        recentsRef.current = clean;
+        setRecents(clean);
+      }
     })();
   }, [ctx]);
 
@@ -174,10 +185,12 @@ function ImagePanel({ ctx }: { ctx: PanelContext }) {
   }, [images]);
 
   const rememberFolder = useCallback(async (dir: string) => {
-    const next = [dir, ...recents.filter((r) => r !== dir)].slice(0, MAX_RECENTS);
+    const next = [dir, ...recentsRef.current.filter((r) => r !== dir)].slice(0, MAX_RECENTS);
+    recentsRef.current = next;
+    wroteRecentsRef.current = true;
     setRecents(next);
     await ctx.plugin.storage.set(RECENTS_KEY, next);
-  }, [ctx, recents]);
+  }, [ctx]);
 
   /**
    * `defaultPath` only positions the dialog, so a recent folder still costs one
@@ -229,6 +242,8 @@ function ImagePanel({ ctx }: { ctx: PanelContext }) {
     await ctx.plugin.ui.notify(parts.join(' · '), failures.length > 0 ? 'warn' : 'info');
     if (failures[0] !== undefined) ctx.plugin.log.warn('copy failed', failures[0]);
   }, [ctx, images, selected, rememberFolder]);
+
+  const closeMenu = useCallback(() => setMenuAt(null), []);
 
   // Open the first image once a folder has been listed.
   useEffect(() => {
@@ -370,7 +385,7 @@ function ImagePanel({ ctx }: { ctx: PanelContext }) {
           recents={recents}
           count={selected.size}
           onPick={(defaultPath) => void copyTo(defaultPath)}
-          onClose={() => setMenuAt(null)}
+          onClose={closeMenu}
         />
       )}
     </div>
