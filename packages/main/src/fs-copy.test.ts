@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { mkdir, mkdtemp, readFile, realpath, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, realpath, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { candidateName, copyFileExclusive } from './fs-copy.js';
@@ -32,6 +32,11 @@ describe('candidateName', () => {
 
   it('handles a name with no extension', () => {
     expect(candidateName('README', 1)).toBe('README-1');
+  });
+
+  it('treats a leading dot as part of the stem, not an extension', () => {
+    expect(candidateName('.hidden', 1)).toBe('.hidden-1');
+    expect(candidateName('.hidden.png', 1)).toBe('.hidden-1.png');
   });
 });
 
@@ -95,5 +100,15 @@ describe('copyFileExclusive', () => {
     }
 
     await expect(copyFileExclusive(source, dest)).rejects.toThrow(/name collisions/);
+  });
+
+  it('propagates a non-EEXIST error instead of retrying it as a collision', async () => {
+    const locked = path.join(root, 'locked');
+    await mkdir(locked);
+    await chmod(locked, 0o500);
+
+    await expect(copyFileExclusive(source, locked)).rejects.toThrow(/EACCES|EPERM/);
+
+    await chmod(locked, 0o700);   // so the temp dir can be cleaned up
   });
 });
