@@ -24,6 +24,8 @@ const bridge: WorkbenchHostBridge = {
   pickDirectory: async () => undefined,
   readDir: async () => [],
   readFile: async () => new Uint8Array(),
+  pickDirectoryForWrite: async () => undefined,
+  copyFile: async () => ({ name: '', renamed: false }),
   netFetch: async () => ({ status: 200, ok: true, headers: {}, body: '' }),
   session: async () => ({}),
   setSessionPanel: async () => undefined,
@@ -353,6 +355,43 @@ describe('contributions', () => {
       'readFile:/tmp/picked.png',
     ]);
     expect(bytes).toEqual(new Uint8Array([1, 2, 3]));
+    expect(host.get(PLUGIN_ID)?.state).toBe('active');
+  });
+
+  it('proxies the write half of ctx.fs, injecting the plugin id on copyFile', async () => {
+    const calls: string[] = [];
+    const fsBridge: WorkbenchHostBridge = {
+      ...bridge,
+      pickDirectoryForWrite: async (defaultPath) => {
+        calls.push(`pickDirectoryForWrite:${defaultPath ?? ''}`);
+        return '/tmp/exports';
+      },
+      copyFile: async (pluginId, source, destDir) => {
+        calls.push(`copyFile:${pluginId}:${source}:${destDir}`);
+        return { name: 'photo-1.png', renamed: true };
+      },
+    };
+
+    let result: { name: string; renamed: boolean } | undefined;
+    const plugin: Plugin = {
+      async activate(ctx) {
+        const dir = await ctx.fs.pickDirectoryForWrite('/tmp/last-used');
+        if (dir !== undefined) result = await ctx.fs.copyFile('/tmp/photo.png', dir);
+      },
+    };
+    const host = createPluginHost({
+      bridge: fsBridge,
+      importModule: async () => ({ plugin }),
+    });
+    host.load([manifest()]);
+
+    await host.activate(PLUGIN_ID);
+
+    expect(calls).toEqual([
+      'pickDirectoryForWrite:/tmp/last-used',
+      `copyFile:${PLUGIN_ID}:/tmp/photo.png:/tmp/exports`,
+    ]);
+    expect(result).toEqual({ name: 'photo-1.png', renamed: true });
     expect(host.get(PLUGIN_ID)?.state).toBe('active');
   });
 

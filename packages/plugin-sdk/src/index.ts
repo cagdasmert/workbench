@@ -109,6 +109,31 @@ export interface PluginContext {
      * `createImageBitmap` or a `DataView` without a cast or a defensive copy.
      */
     readFile(path: string): Promise<Uint8Array<ArrayBuffer>>;
+
+    /**
+     * Grants write access to the chosen directory for this session. Deliberately
+     * separate from `pickDirectory`: browsing a folder must never make it
+     * writable, so the two grant sets never mix.
+     *
+     * `defaultPath` only positions the dialog. It is a convenience for offering
+     * recent destinations and confers nothing on its own — the grant is still
+     * the user confirming the dialog.
+     */
+    pickDirectoryForWrite(defaultPath?: string): Promise<string | undefined>;
+
+    /**
+     * Copies one file into a directory granted by `pickDirectoryForWrite`.
+     *
+     * Never overwrites. On a name collision the copy lands as `name-1.ext`,
+     * `name-2.ext`, and the name actually written comes back in the result.
+     * That is not politeness about user data: the copy is exclusive-create, and
+     * refusing an existing destination is what stops a symlink planted at the
+     * destination filename from redirecting the write outside the grant.
+     *
+     * One file per call. The plugin loops and owns its own concurrency, for the
+     * same reason `readDir` does not recurse.
+     */
+    copyFile(sourcePath: string, destDir: string): Promise<CopyResult>;
   };
 
   /**
@@ -269,6 +294,12 @@ export interface DirEntry {
   size: number;
   /** Epoch millis, so a plugin can sort by date without another round trip. */
   modified: number;
+}
+
+export interface CopyResult {
+  /** Basename actually written. Differs from the source on a collision. */
+  name: string;
+  renamed: boolean;
 }
 
 /** Extensions carry no leading dot: `['png', 'jpg']`. */
