@@ -542,7 +542,7 @@ export class PluginHost {
         pickFile: async (filters) => this.bridge.pickFile(filters),
         pickDirectory: async () => this.bridge.pickDirectory(),
         pickDirectoryForWrite: async (defaultPath) =>
-          this.bridge.pickDirectoryForWrite(defaultPath),
+          this.bridge.pickDirectoryForWrite(pluginId, defaultPath),
         readDir: async (dirPath) => this.bridge.readDir(dirPath),
         readFile: async (filePath) => this.bridge.readFile(filePath),
         copyFile: async (sourcePath, destDir) =>

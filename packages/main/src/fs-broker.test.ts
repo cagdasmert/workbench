@@ -59,6 +59,13 @@ function copyFile(pluginId: unknown, source: unknown, destDir: unknown): Promise
   return Promise.resolve(handler(undefined, pluginId, source, destDir));
 }
 
+/** `fs:pickDirectoryForWrite` takes (event, pluginId, defaultPath). */
+function pickDirectoryForWrite(pluginId: unknown, defaultPath?: unknown): Promise<unknown> {
+  const handler = handlers.get('fs:pickDirectoryForWrite');
+  if (handler === undefined) throw new Error('fs:pickDirectoryForWrite was never registered');
+  return Promise.resolve(handler(undefined, pluginId, defaultPath));
+}
+
 let root: string;
 let source: string;
 let dest: string;
@@ -154,5 +161,22 @@ describe('fs:copyFile — the four-check composition', () => {
     // argument into copyFileExclusive instead of assertReadable's resolved return.
     await expect(copyFile(PLUGIN_ID, escapeLink, dest)).rejects.toThrow(/not inside anything granted/);
     expect(await readdir(dest)).toEqual([]);
+  });
+});
+
+describe('fs:pickDirectoryForWrite — permission check', () => {
+  it('refuses a plugin without the write permission, before the dialog ever shows', async () => {
+    loadFsPermissions([manifest(PLUGIN_ID)]);   // no permissions declared
+
+    await expect(pickDirectoryForWrite(PLUGIN_ID, root)).rejects.toThrow(/declares no/);
+    expect(dialogMock.showOpenDialog).not.toHaveBeenCalled();
+  });
+
+  it('shows the dialog for a plugin that declares the permission', async () => {
+    dialogMock.showOpenDialog.mockResolvedValue({ canceled: true, filePaths: [] });
+
+    await pickDirectoryForWrite(PLUGIN_ID, root);
+
+    expect(dialogMock.showOpenDialog).toHaveBeenCalledTimes(1);
   });
 });

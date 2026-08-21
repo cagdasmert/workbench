@@ -362,8 +362,8 @@ describe('contributions', () => {
     const calls: string[] = [];
     const fsBridge: WorkbenchHostBridge = {
       ...bridge,
-      pickDirectoryForWrite: async (defaultPath) => {
-        calls.push(`pickDirectoryForWrite:${defaultPath ?? ''}`);
+      pickDirectoryForWrite: async (pluginId, defaultPath) => {
+        calls.push(`pickDirectoryForWrite:${pluginId}:${defaultPath ?? ''}`);
         return '/tmp/exports';
       },
       copyFile: async (pluginId, source, destDir) => {
@@ -388,7 +388,9 @@ describe('contributions', () => {
     await host.activate(PLUGIN_ID);
 
     expect(calls).toEqual([
-      'pickDirectoryForWrite:/tmp/last-used',
+      // the plugin id is injected by the host, exactly as it is for copyFile —
+      // the plugin only ever passes defaultPath, never its own id
+      `pickDirectoryForWrite:${PLUGIN_ID}:/tmp/last-used`,
       `copyFile:${PLUGIN_ID}:/tmp/photo.png:/tmp/exports`,
     ]);
     expect(result).toEqual({ name: 'photo-1.png', renamed: true });

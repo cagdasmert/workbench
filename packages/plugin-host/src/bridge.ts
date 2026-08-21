@@ -16,7 +16,7 @@ export interface WorkbenchHostBridge {
   pickDirectory(): Promise<string | undefined>;
   readDir(path: string): Promise<DirEntry[]>;
   readFile(path: string): Promise<Uint8Array<ArrayBuffer>>;
-  pickDirectoryForWrite(defaultPath?: string): Promise<string | undefined>;
+  pickDirectoryForWrite(pluginId: string, defaultPath?: string): Promise<string | undefined>;
   copyFile(pluginId: string, sourcePath: string, destDir: string): Promise<CopyResult>;
   netFetch(pluginId: string, url: string, init?: NetRequestInit): Promise<NetResponse>;
   session(): Promise<{ activePanelId?: string }>;

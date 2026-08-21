@@ -63,7 +63,19 @@ export function registerFsBroker(getWindow: () => BrowserWindow | null): void {
     return picked;
   });
 
-  ipcMain.handle('fs:pickDirectoryForWrite', async (_event, rawDefaultPath: unknown) => {
+  ipcMain.handle('fs:pickDirectoryForWrite', async (
+    _event,
+    rawPluginId: unknown,
+    rawDefaultPath: unknown,
+  ) => {
+    if (typeof rawPluginId !== 'string') {
+      throw new Error('fs:pickDirectoryForWrite expects a plugin id');
+    }
+    // Refusing before the modal appears is the point: an unpermissioned plugin
+    // must not be able to put a dialog on screen at all, let alone have its
+    // confirmation add to the session-global write grants.
+    assertMayWrite(rawPluginId);
+
     const win = getWindow();
     const options = {
       properties: ['openDirectory' as const, 'createDirectory' as const],
