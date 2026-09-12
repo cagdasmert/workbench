@@ -972,3 +972,105 @@ concurrency. Neither is premature: the naive version is unusable on any real pho
 
 **Contract impact:** additive — `pickDirectory`, `readDir`, `DirEntry`. `pickFile` is unchanged
 and still works, so nothing that used it needed touching.
+
+---
+
+## 31 · A plugin that needed a subprocess, and got none
+
+**Plugin:** model-manager · **Verdict:** PLUGIN ADAPTED — no shell change, no SDK change
+
+`modelctl` is a Python CLI that owns two Hugging Face cache roots (internal SSD, external
+drive) and moves models between them. Putting a panel on it is the first plugin whose
+underlying capability the host does not have at all: it needs to *run a program*.
+
+**What I wanted.** `ctx.proc.run('modelctl', ['ls'])`, brokered through main like `fs` and
+`net` already are, gated on a `proc:run:modelctl` permission. Perhaps fifty lines in
+`packages/main`, and an obvious additive SDK bump — 1.6 → 1.7.
+
+**Why it didn't happen.** `fs` and `net` are narrow by construction: `readFile` serves only
+paths granted by a picker this session (entries 2 and 30), and `net.fetch` reaches only hosts
+a manifest names. Neither can be widened by the plugin at runtime. A `proc` capability has no
+comparable natural narrowing — `proc:run:modelctl` sounds specific but the argument vector is
+the actual power, and enumerating safe argument shapes in a manifest is a policy engine, which
+D5 explicitly deferred. Worse, invariant 9 says main never executes plugin code; spawning a
+process *chosen by* a plugin is a short walk from that line, and the walk gets shorter with
+every plugin that asks.
+
+**What happened instead.** `modelctl serve` — a loopback HTTP daemon in front of the same
+catalog — and the plugin reaches it through the `net.fetch` broker it already had, declaring
+`net:fetch:127.0.0.1:8077`. This is exactly the shape `ai-provider` already uses for LM Studio
+and Ollama (entry 24), which is the strongest evidence it is right: the second plugin to need a
+local backend reached for the same seam without the seam being designed for it.
+
+**What the constraint bought.** Three things that a `proc` capability would not have:
+
+- The daemon runs read operations in-process but shells `pull`/`mv`/`rm` back through the CLI,
+  so a 40 GB download that dies takes a subprocess with it, not the server — and the CLI stays
+  the single implementation of what a move actually is.
+- Long operations became **jobs** rather than requests, because a brokered fetch is
+  request/response and has nowhere to stream. A pull returns a job id; the panel polls. That is
+  strictly better than streaming here: a download now survives closing the panel, and a job
+  started from the command palette shows up in a panel opened ten minutes later.
+- The transport is confined to one file. `client.ts` is the only thing that knows HTTP exists;
+  if `ctx.proc` is ever justified by a different plugin, this one changes in one place.
+
+**The one real cost.** A manifest declares hosts statically, so the `daemonUrl` setting can
+only be pointed at ports already listed in `plugin.json`. That is the permission model working
+as designed rather than a defect, but it is a setting the shell will render as freely editable
+and the daemon will refuse — so the client detects a denied host specifically and says which
+file needs the new entry, instead of reporting it as an unreachable server.
+
+**Contract impact:** none. `packages/plugin-sdk/src/index.ts` untouched, `packages/shell`
+untouched, `packages/main` untouched. The panel uses `net`, `settings`, `storage`, `bus`,
+`workspace`, `ui` and `log` exactly as frozen.
+
+**Reserved, not built.** `/v1/generate/*` on the daemon answers 501 today. Video and TTS
+runtimes mount there when their scripts exist, so a TTS plugin is a panel and a route, not a
+second transport.
+
+---
+
+## 32 · Transcribe M1: the first route under `/v1/generate`
+
+**Plugin:** transcribe (vault PRD P1) · **Verdict:** DAEMON ONLY — no workbench code yet
+
+The wire before the panel: `asr.py` beside `modelctl.py`, and three routes on `modelctld`.
+Design deltas over the PRD are in `docs/superpowers/specs/2026-09-11-transcribe-design.md`.
+
+**A job needed a second output channel.** The job runner only ever captured stdout lines into
+a 400-line deque — right for a pull's progress, useless for a two-hour transcript. `start_job`
+now takes a `result_path`: the daemon hands the script a temp file, loads it into `job.result`
+on exit 0, and always deletes it. Exit 0 with no readable result is a *failed* job, not a done
+one with nothing in it. `result` rides only on `GET /v1/jobs/<id>`; the list stays light and
+carries `params` instead, which is what a panel re-attaching needs to show a file name.
+
+**Validation runs in-process, transcription never does.** `asr.py`'s top level is the capability
+table, the checks and the markdown renderer; MLX is imported inside the runtime functions. So
+the daemon imports it and refuses Parakeet + Turkish with a 400 *before a job exists*, from the
+same table the CLI uses — the PRD's "one source of truth, checked in both places" without a
+second Python copy.
+
+**What fell out of the existing machinery for free:**
+
+- One-job-per-repo already keys on the repo, and for generation the repo is the model — so a
+  second run on a busy model is a 409 naming the running job, and so is a run while that model
+  is being moved. The PRD's "queue the rest" is deferred; 409 is the existing guarantee.
+- `PERCENT_RE` already parses tqdm, and mlx-whisper's only progress signal is its own tqdm bar
+  (shown only when `verbose is False` — `None` is silent). A 246 s file reported 0→100 in ten
+  monotonic steps with no new parsing code. Parakeet has a real `chunk_callback`; `asr.py`
+  turns it into the same `NN%` lines.
+
+**Added to the PRD's contract:** `GET /v1/generate/asr/probe` (size, duration, `has_audio` via
+`ffprobe`) — the panel's *Configured* state shows duration and size, and a plugin cannot stat a
+file. `POST /v1/generate/asr` returns the job dict like `pull` does, not a bare `{job_id}`.
+Video input needs nothing: both runtimes decode through `ffmpeg`, which is checked up front
+(503, `brew install ffmpeg`).
+
+**Verified** with `curl` against a Turkish memo made with `say -v Yelda`: turbo returned it
+word-perfect (`saat 9'da`), auto-detect chose `tr`, save wrote front matter plus `[00:00]` lines
+and a second save landed on `-2`. 34 stdlib `unittest` tests in the daemon repo, no weights
+needed. **Not yet exercised:** the Parakeet runtime path — its weights are not downloaded; the
+refusal path is tested, the transcription path is not.
+
+**Contract impact:** none. Workbench is untouched so far.
+
