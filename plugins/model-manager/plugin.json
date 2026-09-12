@@ -1,0 +1,104 @@
+{
+  "id": "model-manager",
+  "name": "Models",
+  "version": "1.0.0",
+  "apiVersion": "1.0",
+  "main": "./dist/index.js",
+  "activationEvents": [
+    "onCommand:model.open",
+    "onCommand:model.search",
+    "onCommand:model.pull"
+  ],
+  "contributes": {
+    "panels": [
+      {
+        "id": "model.main",
+        "title": "Models"
+      }
+    ],
+    "menu": [
+      {
+        "command": "model.open",
+        "label": "Models",
+        "group": "tools"
+      }
+    ],
+    "commands": [
+      {
+        "id": "model.open",
+        "title": "Open Model Manager"
+      },
+      {
+        "id": "model.search",
+        "title": "Search Hugging Face",
+        "args": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "Search terms, e.g. \"flux\" or \"whisper\""
+            },
+            "task": {
+              "type": "string",
+              "enum": ["", "image", "image2image", "video", "tts", "stt", "text", "embed"],
+              "description": "Modality filter",
+              "default": ""
+            }
+          },
+          "required": ["query"]
+        }
+      },
+      {
+        "id": "model.pull",
+        "title": "Download a Model",
+        "args": {
+          "type": "object",
+          "properties": {
+            "repo": {
+              "type": "string",
+              "description": "Repo id, e.g. black-forest-labs/FLUX.1-schnell"
+            },
+            "to": {
+              "type": "string",
+              "enum": ["", "internal", "external"],
+              "description": "Destination drive; empty uses the configured default",
+              "default": ""
+            }
+          },
+          "required": ["repo"]
+        }
+      }
+    ],
+    "accepts": [],
+    "emits": [
+      "application/vnd.modelctl.model+json"
+    ],
+    "settings": {
+      "daemonUrl": {
+        "type": "string",
+        "default": "http://127.0.0.1:8077",
+        "description": "Where `modelctl serve` is listening. Only 127.0.0.1:8077 and localhost:8077 are reachable — a different port needs a matching net:fetch permission in plugin.json."
+      },
+      "token": {
+        "type": "string",
+        "default": "",
+        "description": "Sent as X-Modelctl-Token. Leave empty unless the daemon was started with --token."
+      },
+      "fetchSizes": {
+        "type": "boolean",
+        "default": false,
+        "description": "Fetch each search result's size and RAM fit. One extra Hub request per result, so it is noticeably slower."
+      }
+    },
+    "keybindings": [
+      {
+        "command": "model.open",
+        "key": "cmd+shift+h"
+      }
+    ]
+  },
+  "permissions": [
+    "net:fetch:127.0.0.1:8077",
+    "net:fetch:localhost:8077"
+  ]
+}
