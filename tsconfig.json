@@ -30,6 +30,9 @@
     },
     {
       "path": "plugins/ai-provider"
+    },
+    {
+      "path": "plugins/transcribe"
     }
   ]
 }

@@ -38,8 +38,11 @@ have to be read side by side with a diff.
    choosing a folder in the panel" cannot work. The destination is `ctx.storage.vaultDir`,
    set through `pickDirectory`. One owner.
 7. **Criterion 5 is met through `ai-provider`.** Nothing accepts `text/markdown` today and the
-   bus matches exact types only. `ai-provider` gains `text/markdown` in `accepts` (its handler
-   already takes any string). P2 becomes a second target when it exists.
+   bus matches exact types only. `ai-provider` gains `text/markdown` in `accepts`. *As built:*
+   ai-provider is text → mermaid, not a summariser, and its handler claimed content even with no
+   panel listening — dropping it, since `handled` stops the host before it opens the panel. It
+   now declines when no panel is mounted, so the host opens the AI panel with the transcript as
+   its payload (prefilled, not auto-run). P2 becomes a second target when it exists.
 8. **Auto-save deferred.** Done properly it needs a `save_dir` on the POST so the daemon saves
    with the panel closed. Add it if losing a finished transcript to a daemon restart bites.
 9. **Re-attach by asking the daemon.** On mount the panel reads `GET /v1/jobs` for a running
