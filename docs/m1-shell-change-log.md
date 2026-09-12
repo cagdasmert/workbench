@@ -1197,3 +1197,45 @@ poller's own four tests cover the half that needs a mounted panel, and the daemo
 live: polling stopped the moment the panel unmounted.
 
 **Contract impact:** none. Workbench tests 33 → 68; daemon repo 34.
+
+---
+
+## 36 · The other listener set, and the request it was dropping
+
+**Plugin:** model-manager · **Verdict:** PLUGIN ADAPTED — no shell change, no SDK change
+
+Entry 35 named this one on its way past: "`model-manager`'s `channel()` is the other one in the
+tree." It was. Closed here with the same `mailbox<T>()` transcribe got.
+
+**`openPanel` resolves when the panel is asked for, not when React has rendered it.** The shell's
+PanelHost mounts one panel at a time through an async queue, so `await ctx.workspace.openPanel`
+returns with the mount still pending. `model.search` and `model.pull` then emitted into a
+listener `Set` that was still empty, and a `Set` with no listeners drops silently — no error, no
+log, nothing to notice. The bug only appeared when *the command was what opened the panel*:
+invoked against an already-open Models panel it worked every time, which is exactly why it
+survived this long.
+
+**A one-slot mailbox instead.** `send` hands the request to the listener if there is one and
+otherwise holds it; `receive` takes the slot and drains whatever is waiting synchronously, so a
+panel that mounts late gets the request the moment it subscribes. `deactivate` clears both
+mailboxes — module state is ours to unwind even though registrations are the host's (invariant
+8), and a request nobody drained must not surface in the next activation.
+
+**The subscription had to stop moving.** The old effects re-subscribed whenever `runSearch`,
+`act` or `client` changed. Against a set that is harmless; against a single-slot mailbox the
+cleanup drops the listener a queued request is about to be handed to. So both handlers moved into
+refs, assigned during render, with the effects subscribing once on `[]` — transcribe's shape at
+`index.tsx:298`, and now the reason it is that shape is written down twice.
+
+**A trap the tests hit first:** the mailbox listener is module state too, so a test that
+subscribed and never unsubscribed swallowed the *next* test's request and made a real assertion
+pass for the wrong reason. `afterEach` now releases both slots as well as clearing them. `clear()`
+deliberately does not drop the listener — in the app React's effect cleanup owns that, and
+diverging from transcribe here would buy nothing.
+
+**Reproduced before it was fixed**, as a test rather than by hand: invoke `model.search` with no
+panel subscribed, then subscribe — zero calls. Nine tests now cover it, including the four-
+registration disposal check model-manager never had, both delivery orders, unsubscribe, and the
+two argument guards (empty query, missing repo) that must not queue anything.
+
+**Contract impact:** none. Workbench tests 68 → 77.

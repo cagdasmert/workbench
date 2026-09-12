@@ -34,17 +34,41 @@ type Session = {
 
 const EMPTY_SESSION: Session = { tab: 'installed', query: '', task: '' };
 
-/** Bridges a command invocation to whichever panel instance is mounted. */
-function channel<T>() {
-  const listeners = new Set<(v: T) => void>();
+type SearchRequest = { query: string; task: string };
+type PullRequest = { repo: string; to: string };
+
+/**
+ * Bridges a command invocation to whichever panel instance is mounted. A
+ * command can fire before the panel has mounted — `openPanel` resolves when
+ * the panel is asked for, not when React has rendered it. So a request is held
+ * until someone is listening, rather than emitted into an empty room.
+ */
+function mailbox<T>() {
+  let pending: T | undefined;
+  let listener: ((v: T) => void) | undefined;
   return {
-    emit(v: T) { for (const l of listeners) l(v); },
-    on(l: (v: T) => void) { listeners.add(l); return () => { listeners.delete(l); }; },
+    get pending(): T | undefined { return pending; },
+    /** On deactivate: a request nobody drained must not surface in the next activation. */
+    clear(): void { pending = undefined; },
+    send(v: T): void {
+      if (listener !== undefined) listener(v);
+      else pending = v;
+    },
+    receive(l: (v: T) => void): () => void {
+      listener = l;
+      if (pending !== undefined) {
+        const v = pending;
+        pending = undefined;
+        l(v);
+      }
+      return () => { if (listener === l) listener = undefined; };
+    },
   };
 }
 
-const searchRequests = channel<{ query: string; task: string }>();
-const pullRequests = channel<{ repo: string; to: string }>();
+/** Exported for the disposal test only; the host reads nothing but `plugin`. */
+export const searchRequests = mailbox<SearchRequest>();
+export const pullRequests = mailbox<PullRequest>();
 
 // ─── panel ───────────────────────────────────────────────────
 
@@ -211,14 +235,22 @@ function ModelManagerPanel({ ctx }: { ctx: PanelContext }) {
     }
   }, []);
 
-  useEffect(() => searchRequests.on(({ query, task }) => {
+  // A mailbox holds one listener and hands over anything already waiting the
+  // moment it subscribes, so these subscribe once at mount. The handlers live
+  // in refs: re-subscribing whenever a callback changed would tear down the
+  // listener a queued request is about to be delivered to.
+  const onSearch = useRef<(r: SearchRequest) => void>(() => undefined);
+  onSearch.current = ({ query, task }) => {
     setSession((s) => ({ ...s, tab: 'search', query, task }));
     void runSearch(query, task);
-  }), [runSearch]);
+  };
+  useEffect(() => searchRequests.receive((r) => onSearch.current(r)), []);
 
-  useEffect(() => pullRequests.on(({ repo, to }) => {
+  const onPull = useRef<(r: PullRequest) => void>(() => undefined);
+  onPull.current = ({ repo, to }) => {
     void act(() => client.pull(repo, to === '' ? undefined : to));
-  }), [act, client]);
+  };
+  useEffect(() => pullRequests.receive((r) => onPull.current(r)), []);
 
   const locations = useMemo(
     () => (doctor?.roots ?? []).map((r) => r.name),
@@ -903,7 +935,7 @@ export const plugin: Plugin = {
       const query = typeof args[0] === 'string' ? args[0] : '';
       const task = typeof args[1] === 'string' ? args[1] : '';
       await ctx.workspace.openPanel('model.main');
-      if (query !== '') searchRequests.emit({ query, task });
+      if (query !== '') searchRequests.send({ query, task });
     });
 
     ctx.registerCommand('model.pull', async (...args: unknown[]) => {
@@ -914,11 +946,14 @@ export const plugin: Plugin = {
         return;
       }
       await ctx.workspace.openPanel('model.main');
-      pullRequests.emit({ repo, to });
+      pullRequests.send({ repo, to });
     });
   },
 
   deactivate() {
-    console.log('model-manager deactivating');
+    // Registrations are the host's to unwind (invariant 8). Module state is
+    // ours: a request no panel drained must not leak into the next activation.
+    searchRequests.clear();
+    pullRequests.clear();
   },
 };
