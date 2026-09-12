@@ -65,7 +65,8 @@
       }
     ],
     "accepts": [
-      "text/plain"
+      "text/plain",
+      "text/markdown"
     ],
     "emits": [
       "text/vnd.mermaid"
