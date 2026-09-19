@@ -1305,3 +1305,65 @@ embedder and token counter are injected, so none of them loads weights — and t
 still pass.
 
 **Contract impact:** none. Workbench is untouched so far.
+
+---
+
+## 38 · Vault search M2: a warm worker, and a panel over it
+
+**Plugin:** vault-search (vault PRD P2) · **Verdict:** PLUGIN ADAPTED — no shell change, no SDK change
+
+**Search runs in a process the daemon keeps alive, not in the daemon.** `embed.py serve` is a
+JSON-lines worker holding LaBSE and every vector as one float32 matrix. `modelctld` spawns it
+on the first `/v1/search`, and the worker exits itself after 10 idle minutes. The matrix
+reloads when the store's `generation` counter moves, so an index job finishing in another
+process shows up on the next query. The worker keeps the real stdout for the protocol and
+points fd 1 at stderr, so a library that prints cannot corrupt a reply.
+
+**Respawn turned out quieter than planned.** The plan expected a killed worker to cost one
+503. In practice the supervisor sees the dead process before writing to it and starts a new
+one, so `kill -9` on the worker is invisible to the next search. The 503 (naming the worker's
+last stderr line) is now only for a death *during* a request, which the tests cover with a
+fake worker.
+
+**Numbers** on 5,356 chunks, one hit per note:
+- A cold first search takes 3.3 s, all of it model load.
+- A warm search takes 8–120 ms; the matrix product is a few of those, the rest is embedding the query on MPS.
+
+**Cross-language retrieval is the real win.**
+- "saç derisi kepeklenme tedavisi" (Turkish) returned five English seborrheic-dermatitis
+  notes that share no word with the query.
+- "uzun videolarda karakter tutarlılığı nasıl korunur" put the long-form video consistency
+  note first.
+- Abstract questions are weaker: "eklenti sözleşmesi neden dondurulmuş" did not surface the
+  architecture notes. LaBSE was trained to match translations, not to answer questions.
+  Scores sit around 0.35–0.48, so the number on a card ranks, it does not certify. Worth
+  revisiting with an E5-style multilingual retriever before M4 leans on these hits for
+  answers.
+
+**`net.fetch` speaks GET and POST only.** The plugin cannot send the `DELETE
+/v1/index/folders/<name>` that M1 built, so M3's *Remove folder* needs a POST route. That is a
+daemon change, not an SDK one, and it is recorded here so it is not rediscovered.
+
+**Found on the way:** `npm run typecheck` had been failing since the transcribe merge.
+model-manager's and transcribe's disposal tests hand-roll a `WorkbenchHostBridge` that
+predates `pickDirectoryForWrite`/`copyFile`. Vitest does not typecheck, so the tests stayed
+green. Fixed in its own commit.
+
+**The panel:**
+- First run is one button. After that: indexing progress (re-attached from `GET /v1/jobs` on reopen).
+- One search input.
+- One card per note: title, folder tag, score, section, and the passage with the query's
+  words marked.
+- The marking is Turkish-folded (`İ`/`ı` fold without changing length) and literal, because
+  the ranking is semantic and the marks only show where the words are.
+- Clicking a card expands the full chunk. *Copy link* writes a `[[wikilink]]`.
+- `vault.search` queues its query for the panel through the same mailbox transcribe uses.
+
+**Verified:**
+- 30 daemon tests added (74 total).
+- 14 plugin tests, including the disposal test (143 total).
+- `tsc -b` clean.
+- Search, respawn and `/v1/embed` via `curl` on the real vault.
+- **Not yet verified in the running app:** folder pick → index → search, re-attach, and Copy link.
+
+**Contract impact:** none.
