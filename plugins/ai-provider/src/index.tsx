@@ -269,9 +269,14 @@ export const plugin: Plugin = {
       if (text !== '') prompts.emit(text);
     });
 
-    // Any plugin emitting text/plain can land here — "explain this" for free.
+    // Any plugin emitting text/plain or text/markdown can land here.
     ctx.bus.onReceive((content) => {
       if (typeof content.data !== 'string') return;
+      // The shell mounts one panel at a time, so while the sender's panel is
+      // showing, nobody is listening here. Claiming the content then would
+      // drop it: `handled` short-circuits the host before it opens this panel.
+      // Declining lets the host open the panel with it as the payload instead.
+      if (prompts.listeners.size === 0) return;
       prompts.emit(content.data);
       return { handled: true };
     });

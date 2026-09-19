@@ -1,0 +1,103 @@
+{
+  "id": "transcribe",
+  "name": "Transcribe",
+  "version": "1.0.0",
+  "apiVersion": "1.0",
+  "main": "./dist/index.js",
+  "activationEvents": [
+    "onCommand:transcribe.open",
+    "onCommand:transcribe.file"
+  ],
+  "contributes": {
+    "panels": [
+      {
+        "id": "transcribe.main",
+        "title": "Transcribe"
+      }
+    ],
+    "menu": [
+      {
+        "command": "transcribe.open",
+        "label": "Transcribe",
+        "group": "tools"
+      }
+    ],
+    "commands": [
+      {
+        "id": "transcribe.open",
+        "title": "Open Transcribe",
+        "args": {
+          "type": "object",
+          "properties": {},
+          "required": []
+        }
+      },
+      {
+        "id": "transcribe.file",
+        "title": "Transcribe a File",
+        "args": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Absolute path to an audio or video file"
+            },
+            "model": {
+              "type": "string",
+              "description": "Repo id; empty uses the configured default",
+              "default": ""
+            },
+            "language": {
+              "type": "string",
+              "description": "ISO code, or 'auto' to detect",
+              "default": "auto"
+            }
+          },
+          "required": ["path"]
+        }
+      }
+    ],
+    "accepts": [
+      "audio/wav",
+      "audio/mpeg",
+      "audio/mp4",
+      "video/mp4"
+    ],
+    "emits": [
+      "text/markdown",
+      "application/vnd.modelctl.transcript+json"
+    ],
+    "settings": {
+      "daemonUrl": {
+        "type": "string",
+        "default": "http://127.0.0.1:8077",
+        "description": "Where `modelctl serve` is listening. Only 127.0.0.1:8077 and localhost:8077 are reachable — a different port needs a matching net:fetch permission in plugin.json."
+      },
+      "token": {
+        "type": "string",
+        "default": "",
+        "description": "Sent as X-Modelctl-Token. Leave empty unless the daemon was started with --token."
+      },
+      "model": {
+        "type": "string",
+        "default": "mlx-community/whisper-large-v3-turbo",
+        "description": "Default ASR model. Must be present in the catalog."
+      },
+      "timestamps": {
+        "type": "boolean",
+        "default": true,
+        "description": "Prefix each segment with [mm:ss] in the saved markdown."
+      }
+    },
+    "keybindings": [
+      {
+        "command": "transcribe.open",
+        "key": "cmd+shift+t"
+      }
+    ]
+  },
+  "permissions": [
+    "net:fetch:127.0.0.1:8077",
+    "net:fetch:localhost:8077"
+  ]
+}

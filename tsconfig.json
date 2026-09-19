@@ -30,6 +30,12 @@
     },
     {
       "path": "plugins/ai-provider"
+    },
+    {
+      "path": "plugins/model-manager"
+    },
+    {
+      "path": "plugins/transcribe"
     }
   ]
 }

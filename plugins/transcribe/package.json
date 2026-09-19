@@ -1,0 +1,14 @@
+{
+  "name": "@workbench-plugin/transcribe",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@workbench/plugin-sdk": "*",
+    "react": "*",
+    "react-dom": "*"
+  },
+  "devDependencies": {
+    "@workbench/plugin-host": "*"
+  }
+}

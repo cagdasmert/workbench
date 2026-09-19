@@ -76,6 +76,8 @@ Priority: **P1** = build early · **P2** = clear value · **P3** = someday
 
 | Plugin | Priority | Notes |
 |---|---|---|
+| Model manager | **P1** | ✅ built. Front end for `modelctl` (two HF cache drives) over a loopback daemon — inventory, Hub search with RAM-fit, pull/move/delete as polled jobs. Needed no SDK change; see change log 31 |
+| Text → speech | **P2** | A panel against `/v1/generate/speech` on the same daemon the model manager already uses |
 | Ollama chat panel | **P2** | Connects to existing local-inference work |
 | Text → mermaid | **P2** | Emits `text/vnd.mermaid` straight into the mermaid viewer — the clearest demo of why the bus exists |
 | "Explain this JSON/log" | **P3** | Accepts from any structured-data plugin |
