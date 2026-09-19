@@ -1,0 +1,93 @@
+{
+  "id": "vault-search",
+  "name": "Vault",
+  "version": "1.0.0",
+  "apiVersion": "1.0",
+  "main": "./dist/index.js",
+  "activationEvents": [
+    "onCommand:vault.open",
+    "onCommand:vault.search"
+  ],
+  "contributes": {
+    "panels": [
+      {
+        "id": "vault.main",
+        "title": "Vault"
+      }
+    ],
+    "menu": [
+      {
+        "command": "vault.open",
+        "label": "Vault",
+        "group": "tools"
+      }
+    ],
+    "commands": [
+      {
+        "id": "vault.open",
+        "title": "Open Vault Search",
+        "args": {
+          "type": "object",
+          "properties": {},
+          "required": []
+        }
+      },
+      {
+        "id": "vault.search",
+        "title": "Search My Notes",
+        "args": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "What you are looking for, in plain language"
+            },
+            "limit": {
+              "type": "number",
+              "description": "How many notes to return",
+              "default": 8
+            },
+            "answer": {
+              "type": "boolean",
+              "description": "Also synthesise an answer from the results",
+              "default": false
+            }
+          },
+          "required": ["query"]
+        }
+      }
+    ],
+    "settings": {
+      "daemonUrl": {
+        "type": "string",
+        "default": "http://127.0.0.1:8077",
+        "description": "Where `modelctl serve` is listening. Only 127.0.0.1:8077 and localhost:8077 are reachable — a different port needs a matching net:fetch permission in plugin.json."
+      },
+      "token": {
+        "type": "string",
+        "default": "",
+        "description": "Sent as X-Modelctl-Token. Leave empty unless the daemon was started with --token."
+      },
+      "embedModel": {
+        "type": "string",
+        "default": "sentence-transformers/LaBSE",
+        "description": "Embedding model for newly indexed folders. Changing it invalidates the whole index."
+      },
+      "chunkSize": {
+        "type": "number",
+        "default": 512,
+        "description": "Tokens per chunk, capped at the model's window (LaBSE: 254). Changing it invalidates the index."
+      }
+    },
+    "keybindings": [
+      {
+        "command": "vault.open",
+        "key": "cmd+shift+v"
+      }
+    ]
+  },
+  "permissions": [
+    "net:fetch:127.0.0.1:8077",
+    "net:fetch:localhost:8077"
+  ]
+}
