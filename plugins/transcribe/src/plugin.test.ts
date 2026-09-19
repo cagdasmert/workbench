@@ -35,6 +35,8 @@ const bridge: WorkbenchHostBridge = {
   notify: async () => undefined,
   pickFile: async () => undefined,
   pickDirectory: async () => undefined,
+  pickDirectoryForWrite: async () => undefined,
+  copyFile: async () => ({ name: '', renamed: false }),
   readDir: async () => [],
   readFile: async () => new Uint8Array(),
   netFetch,
