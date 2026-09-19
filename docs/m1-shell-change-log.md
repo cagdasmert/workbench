@@ -1256,3 +1256,52 @@ poller's own four tests cover the half that needs a mounted panel, and the daemo
 live: polling stopped the moment the panel unmounted.
 
 **Contract impact:** none. Workbench tests 33 → 68; daemon repo 34.
+
+---
+
+## 37 · Vault search M1: an index the daemon owns and never embeds into
+
+**Plugin:** vault-search (vault PRD P2) · **Verdict:** DAEMON ONLY — no workbench code yet
+
+`embed.py` beside `asr.py`, and four routes under `/v1/index` on `modelctld`. Design deltas over
+the PRD are in `docs/superpowers/specs/2026-09-19-vault-search-design.md`; the plan is
+`docs/superpowers/plans/2026-09-19-vault-search-m1-index.md`.
+
+**The daemon still never imports torch.** Reading the index is in-process: `embed.py`'s top
+level (chunker, SQLite store, change scan) is stdlib-only, and vectors are `array('f')` blobs,
+so not even numpy crosses into the server. Embedding runs only in `embed.py index`, started by
+the existing `start_job` as `kind: 'embed'` with the model as its repo, so progress, cancel and
+the 409 came for free. M2's search worker keeps the same line: a persistent `embed.py serve`
+subprocess, not a model loaded into the daemon.
+
+**The PRD's default chunk size does not fit the model it chose.** LaBSE's window is 256 tokens;
+`chunkSize: 512` would be truncated silently, and "silently" is the problem — half of every
+long passage would never be searchable. The indexer caps it at the window minus the special
+tokens (254) and says so in the job log. The folder still records the 512 it asked for, so
+the "settings changed, re-index everything?" check compares a request with a request and does
+not fire just because of the cap.
+
+**"Atomic notes are one chunk" was half right.** 84 of 319 notes fit in one chunk; the vault
+also holds long research documents, and the average is ~17 chunks a note. Heading paths
+(`Title › 3. System Architecture › 3.1 Process Model`) prefix every split chunk's embedded
+text, which is what keeps a section of a long note findable by the note's subject.
+
+**A touch is not an edit.** A file is re-embedded when its mtime moved *and* its sha256
+changed; a bare mtime change only updates the row. `GET /v1/index/folders` reports `changed`
+from mtimes alone (cheap enough to call when the panel opens), so it can overcount a touched
+file; Refresh then embeds nothing. `changed: null` means the folder is unreachable — an
+unmounted external drive is not "0 changed".
+
+**Link graph stored, not used.** 714 wikilinks went into `links` on the first index. Nothing
+ranks on them yet; storing them now is what lets graph weighting land without a re-index.
+
+**Verified** with `curl` against a scratch index (`MODELCTL_VAULT_INDEX`): `Calismalar` —
+319 files, 5,356 chunks — indexed in 53 s on MPS. After a daemon restart the counts were
+unchanged and a refresh embedded 0 files (3.2 s, all of it model load). On a copy of
+`02_Projects` (59 files), one edited note plus one touched note showed `changed: 2` and
+refreshed with `embedded: 1`. A different `chunk_size` without `full` was refused, and a
+DELETE removed the folder and left the notes on disk. 24 new stdlib `unittest` tests — the
+embedder and token counter are injected, so none of them loads weights — and the 34 asr tests
+still pass.
+
+**Contract impact:** none. Workbench is untouched so far.
