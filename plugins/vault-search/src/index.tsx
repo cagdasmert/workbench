@@ -13,6 +13,7 @@ import {
   type SearchResult,
 } from './client.js';
 import { startPoller } from './poller.js';
+import { staleness, type Staleness, type Tone } from './staleness.js';
 import { excerpt, highlight, progressOf, wikilink } from './text.js';
 
 const PANEL_ID = 'vault.main';
@@ -22,10 +23,10 @@ const DEFAULT_CHUNK_SIZE = 512;
 /** After this long, "Searching…" becomes "Loading the model…" — the cold worker is the only slow case. */
 const SLOW_MS = 1_500;
 
-interface SearchRequest {
-  query: string;
-  limit: number;
-}
+/** What a command asks of the panel. Plain data: it crosses the mailbox, not a callback. */
+type Request =
+  | { kind: 'search'; query: string; limit: number }
+  | { kind: 'reindex'; full: boolean };
 
 /**
  * A command can fire before the panel has mounted — `openPanel` resolves when
@@ -56,7 +57,7 @@ function mailbox<T>() {
 }
 
 /** Exported for the disposal test only; the host reads nothing but `plugin`. */
-export const requests = mailbox<SearchRequest>();
+export const requests = mailbox<Request>();
 
 function clampLimit(v: unknown): number {
   return typeof v === 'number' && Number.isFinite(v) ? Math.max(1, Math.min(50, Math.round(v))) : DEFAULT_LIMIT;
@@ -69,7 +70,10 @@ function VaultPanel({ ctx }: { ctx: PanelContext }) {
   const [token, setToken] = useState('');
   const [embedModel, setEmbedModel] = useState(DEFAULT_MODEL);
   const [chunkSize, setChunkSize] = useState(DEFAULT_CHUNK_SIZE);
+  const [autoRefresh, setAutoRefresh] = useState(true);
   const [query, setQuery] = useState('');
+  /** Folder names a search is limited to; empty means all. Names only (PRD §8). */
+  const [scope, setScope] = useState<string[]>([]);
   // TRAP 1 (change log 6, 13): storage and settings are async. Nothing is
   // saved, and the daemon is not contacted, until both have been read.
   const [loaded, setLoaded] = useState(false);
@@ -83,25 +87,32 @@ function VaultPanel({ ctx }: { ctx: PanelContext }) {
   const [searching, setSearching] = useState(false);
   const [slow, setSlow] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [showFolders, setShowFolders] = useState(false);
+  const [confirm, setConfirm] = useState<Confirm | null>(null);
 
   const client = useMemo(() => new VaultClient(ctx.plugin, daemonUrl, token), [ctx, daemonUrl, token]);
+  const settings = useMemo(() => ({ model: embedModel, chunkSize }), [embedModel, chunkSize]);
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const [u, t, m, c, last] = await Promise.all([
+      const [u, t, m, c, auto, last, savedScope] = await Promise.all([
         ctx.plugin.settings.get('daemonUrl'),
         ctx.plugin.settings.get('token'),
         ctx.plugin.settings.get('embedModel'),
         ctx.plugin.settings.get('chunkSize'),
+        ctx.plugin.settings.get('autoRefresh'),
         ctx.plugin.storage.get('lastQuery'),
+        ctx.plugin.storage.get('scope'),
       ]);
       if (cancelled) return;
       if (typeof u === 'string' && u !== '') setDaemonUrl(u);
       if (typeof t === 'string') setToken(t);
       if (typeof m === 'string' && m !== '') setEmbedModel(m);
       if (typeof c === 'number' && c > 0) setChunkSize(c);
+      if (typeof auto === 'boolean') setAutoRefresh(auto);
       if (typeof last === 'string') setQuery(last);
+      if (Array.isArray(savedScope)) setScope(savedScope.filter((x): x is string => typeof x === 'string'));
       setLoaded(true);
     })();
     return () => { cancelled = true; };
@@ -114,9 +125,14 @@ function VaultPanel({ ctx }: { ctx: PanelContext }) {
       if (key === 'token' && typeof value === 'string') setToken(value);
       if (key === 'embedModel' && typeof value === 'string' && value !== '') setEmbedModel(value);
       if (key === 'chunkSize' && typeof value === 'number' && value > 0) setChunkSize(value);
+      if (key === 'autoRefresh' && typeof value === 'boolean') setAutoRefresh(value);
     });
     return () => { void sub.dispose(); };
   }, [ctx]);
+
+  useEffect(() => {
+    if (loaded) void ctx.plugin.storage.set('scope', scope);
+  }, [ctx, loaded, scope]);
 
   const fail = useCallback((err: unknown) => {
     const e = asDaemonError(err);
@@ -124,13 +140,22 @@ function VaultPanel({ ctx }: { ctx: PanelContext }) {
     else setError(e);
   }, []);
 
+  /** A folder removed elsewhere must not linger in the scope, or every search would 404. */
+  const applyFolders = useCallback((list: Folder[]) => {
+    setFolders(list);
+    setScope((cur) => {
+      const kept = cur.filter((n) => list.some((f) => f.name === n));
+      return kept.length === cur.length ? cur : kept;
+    });
+  }, []);
+
   const reloadFolders = useCallback(async () => {
     try {
-      setFolders(await client.folders());
+      applyFolders(await client.folders());
     } catch (err: unknown) {
       fail(err);
     }
-  }, [client, fail]);
+  }, [client, applyFolders, fail]);
 
   const connect = useCallback(async () => {
     setOffline(null);
@@ -139,7 +164,7 @@ function VaultPanel({ ctx }: { ctx: PanelContext }) {
       // C4: an index job outlives the panel that started it. Ask the daemon —
       // the only thing that knows — rather than trusting a remembered id.
       const [list, { jobs }] = await Promise.all([client.folders(), client.jobs()]);
-      setFolders(list);
+      applyFolders(list);
       const running = jobs.find((j) => j.kind === 'embed' && j.state === 'running');
       if (running !== undefined) setJob(running);
       setConnected(true);
@@ -147,11 +172,57 @@ function VaultPanel({ ctx }: { ctx: PanelContext }) {
       setConnected(false);
       fail(err);
     }
-  }, [client, fail]);
+  }, [client, applyFolders, fail]);
 
   useEffect(() => { if (loaded) void connect(); }, [loaded, connect]);
 
   // ─── indexing ──────────────────────────────────────────────
+
+  /**
+   * Folders still to refresh after the running job. One job at a time: every
+   * folder may use a different model, and the daemon's one-job-per-model rule
+   * would 409 a second job on the same one anyway.
+   */
+  const queue = useRef<Array<{ name: string; full: boolean }>>([]);
+
+  const startRefresh = useCallback(async (name: string, full: boolean): Promise<void> => {
+    setError(null);
+    try {
+      // Without `full` the daemon uses the folder's own settings, so this never
+      // changes a model behind the user's back; with it, the new settings apply.
+      setJob(await client.refresh(full ? { name, full, model: embedModel, chunk_size: chunkSize } : { name }));
+    } catch (err: unknown) {
+      queue.current = [];
+      fail(err);
+    }
+  }, [client, embedModel, chunkSize, fail]);
+
+  const refreshMany = useCallback((items: Array<{ name: string; full: boolean }>) => {
+    const [first, ...rest] = items;
+    if (first === undefined) return;
+    queue.current = rest;
+    void startRefresh(first.name, first.full);
+  }, [startRefresh]);
+
+  /** Changed folders whose settings still match — the ones a plain refresh can fix. */
+  const staleNames = useCallback((list: Folder[]): string[] => list
+    .filter((f) => { const s = staleness(f, Date.now() / 1000, settings); return s.tone === 'stale'; })
+    .map((f) => f.name), [settings]);
+
+  const onJobEnd = useRef<(j: EmbedJob) => void>(() => undefined);
+  onJobEnd.current = (j) => {
+    void reloadFolders();
+    if (j.state === 'failed') {
+      queue.current = [];
+      setError(new DaemonError(j.error ?? 'Indexing failed.', undefined, 'api'));
+      return;
+    }
+    if (j.state === 'cancelled') {
+      queue.current = [];
+      return;
+    }
+    refreshMany(queue.current);
+  };
 
   const jobId = job?.state === 'running' ? job.id : null;
   useEffect(() => {
@@ -160,15 +231,24 @@ function VaultPanel({ ctx }: { ctx: PanelContext }) {
       fetch: () => client.job(jobId),
       onValue: (j) => {
         setJob(j);
-        if (j.state === 'done') void reloadFolders();
-        if (j.state === 'failed') setError(new DaemonError(j.error ?? 'Indexing failed.', undefined, 'api'));
+        if (j.state !== 'running') onJobEnd.current(j);
       },
       // A failed poll (offline included) may be a restart in progress: keep polling.
       onError: () => undefined,
       next: (j) => (j.state === 'running' ? 1_000 : undefined),
     });
     return () => poller.stop();
-  }, [client, jobId, reloadFolders]);
+  }, [client, jobId]);
+
+  // autoRefresh: once per mount, only when nothing is already running, and
+  // never for a folder whose settings changed — that one waits for a click.
+  const autoDone = useRef(false);
+  useEffect(() => {
+    if (!connected || folders === null || autoDone.current) return;
+    autoDone.current = true;
+    if (!autoRefresh || job?.state === 'running') return;
+    refreshMany(staleNames(folders).map((name) => ({ name, full: false })));
+  }, [connected, folders, autoRefresh, job, refreshMany, staleNames]);
 
   /** `pickDirectory` is the consent gesture and the path chooser (C2); the daemon does the reading. */
   const chooseFolder = useCallback(async () => {
@@ -183,12 +263,43 @@ function VaultPanel({ ctx }: { ctx: PanelContext }) {
   }, [ctx, client, embedModel, chunkSize, fail]);
 
   const cancel = useCallback(async (j: EmbedJob) => {
+    queue.current = [];
     try {
       await client.cancel(j.id);
     } catch (err: unknown) {
       fail(err);   // most likely 409: it finished while the click was in flight
     }
   }, [client, fail]);
+
+  const remove = useCallback(async (name: string) => {
+    setError(null);
+    try {
+      await client.removeFolder(name);
+      setResult(null);
+      await reloadFolders();
+    } catch (err: unknown) {
+      fail(err);
+    }
+  }, [client, reloadFolders, fail]);
+
+  const confirmed = useCallback((c: Confirm) => {
+    setConfirm(null);
+    if (c.kind === 'remove') void remove(c.name);
+    else if (c.name === null) refreshMany((folders ?? []).map((f) => ({ name: f.name, full: true })));
+    else refreshMany([{ name: c.name, full: true }]);
+  }, [remove, refreshMany, folders]);
+
+  const reindex = useCallback((full: boolean) => {
+    if (folders === null || folders.length === 0) return;
+    if (full) {
+      setShowFolders(true);
+      setConfirm({ kind: 'full', name: null });
+      return;
+    }
+    const names = staleNames(folders);
+    if (names.length === 0) void ctx.plugin.ui.notify('Every folder is up to date.', 'info');
+    else refreshMany(names.map((name) => ({ name, full: false })));
+  }, [ctx, folders, staleNames, refreshMany]);
 
   // ─── search ────────────────────────────────────────────────
 
@@ -204,7 +315,7 @@ function VaultPanel({ ctx }: { ctx: PanelContext }) {
     const slowTimer = setTimeout(() => { if (seq === searchSeq.current) setSlow(true); }, SLOW_MS);
     void ctx.plugin.storage.set('lastQuery', trimmed);
     try {
-      const res = await client.search({ query: trimmed, limit });
+      const res = await client.search({ query: trimmed, limit, ...(scope.length > 0 ? { folders: scope } : {}) });
       if (seq === searchSeq.current) setResult({ query: trimmed, res });
     } catch (err: unknown) {
       if (seq === searchSeq.current) fail(err);
@@ -212,20 +323,25 @@ function VaultPanel({ ctx }: { ctx: PanelContext }) {
       clearTimeout(slowTimer);
       if (seq === searchSeq.current) setSearching(false);
     }
-  }, [ctx, client, fail]);
+  }, [ctx, client, scope, fail]);
 
-  // Commands, once the daemon is reachable. The handler lives in a ref so a
-  // changed client does not drop a queued request.
-  const onRequest = useRef<(req: SearchRequest) => void>(() => undefined);
+  // Commands, once the daemon is reachable and the folders are known. The
+  // handler lives in a ref so a changed client does not drop a queued request.
+  const onRequest = useRef<(req: Request) => void>(() => undefined);
   onRequest.current = (req) => {
+    if (req.kind === 'reindex') {
+      reindex(req.full);
+      return;
+    }
     setQuery(req.query);
     void run(req.query, req.limit);
   };
 
+  const ready = connected && folders !== null;
   useEffect(() => {
-    if (!connected) return undefined;
+    if (!ready) return undefined;
     return requests.receive((req) => onRequest.current(req));
-  }, [connected]);
+  }, [ready]);
 
   const copyLink = useCallback(async (hit: Hit) => {
     try {
@@ -235,6 +351,10 @@ function VaultPanel({ ctx }: { ctx: PanelContext }) {
       await ctx.plugin.ui.notify('Could not write to the clipboard.', 'warn');
     }
   }, [ctx]);
+
+  const toggleScope = useCallback((name: string) => {
+    setScope((cur) => (cur.includes(name) ? cur.filter((n) => n !== name) : [...cur, name]));
+  }, []);
 
   // ─── render ────────────────────────────────────────────────
 
@@ -251,13 +371,17 @@ function VaultPanel({ ctx }: { ctx: PanelContext }) {
   }
 
   const indexing = job !== null && job.state === 'running';
+  const now = Date.now() / 1000;
+  const states = folders.map((f) => ({ folder: f, st: staleness(f, now, settings) }));
+  const attention = states.filter((s) => s.st.tone !== 'ok').length;
+  const foldersOpen = showFolders || (result === null && !searching) || confirm !== null;
 
   return (
     <div style={S.root}>
       {error !== null && <ErrorBar error={error} onDismiss={() => setError(null)} />}
       <div style={S.body}>
         <div style={S.column}>
-          {indexing && <Indexing job={job} onCancel={() => void cancel(job)} />}
+          {indexing && <Indexing job={job} queued={queue.current.length} onCancel={() => void cancel(job)} />}
 
           {!indexing && folders.length === 0 && (
             <div style={S.pickArea}>
@@ -290,9 +414,63 @@ function VaultPanel({ ctx }: { ctx: PanelContext }) {
                   Search
                 </button>
               </form>
-              <p style={S.folderLine}>
-                {folders.map((f) => `${f.name} · ${f.files} notes`).join('   ')}
-              </p>
+
+              <div style={S.scopeRow}>
+                {folders.length > 1 && folders.map((f) => (
+                  <button
+                    key={f.name}
+                    type="button"
+                    style={{ ...S.chip, ...(scope.includes(f.name) ? S.chipOn : {}) }}
+                    aria-pressed={scope.includes(f.name)}
+                    title={scope.length === 0 ? 'Searching every folder — click to search only this one' : undefined}
+                    onClick={() => toggleScope(f.name)}
+                  >
+                    {f.name}
+                  </button>
+                ))}
+                {folders.length === 1 && <span>{folders[0]?.name} · {folders[0]?.files} notes</span>}
+                <button type="button" style={S.linkButton} onClick={() => setShowFolders((v) => !v)}>
+                  {foldersOpen ? 'Hide folders' : `Folders${attention > 0 ? ` (${attention})` : ''}`}
+                </button>
+              </div>
+
+              {foldersOpen && (
+                <div style={S.folders}>
+                  {states.map(({ folder, st }) => (
+                    <FolderRow
+                      key={folder.name}
+                      folder={folder}
+                      st={st}
+                      busy={indexing}
+                      confirm={confirm}
+                      onRefresh={() => (st.needsFull
+                        ? setConfirm({ kind: 'full', name: folder.name })
+                        : refreshMany([{ name: folder.name, full: false }]))}
+                      onRemove={() => setConfirm({ kind: 'remove', name: folder.name })}
+                      onConfirm={confirmed}
+                      onCancel={() => setConfirm(null)}
+                    />
+                  ))}
+                  {confirm?.kind === 'full' && confirm.name === null && (
+                    <ConfirmBar
+                      text={`Re-embed all ${folders.reduce((n, f) => n + f.files, 0)} notes in every folder? This takes a while.`}
+                      action="Re-index all"
+                      onConfirm={() => confirmed(confirm)}
+                      onCancel={() => setConfirm(null)}
+                    />
+                  )}
+                  <div style={S.folderActions}>
+                    <button type="button" style={S.button} disabled={indexing} onClick={() => void chooseFolder()}>
+                      Add folder
+                    </button>
+                    {staleNames(folders).length > 1 && (
+                      <button type="button" style={S.button} disabled={indexing} onClick={() => reindex(false)}>
+                        Refresh all changed
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
 
               {searching && <p style={S.muted}>{slow ? 'Loading the model…' : 'Searching…'}</p>}
 
@@ -330,6 +508,71 @@ function VaultPanel({ ctx }: { ctx: PanelContext }) {
 
 // ─── sub-views ───────────────────────────────────────────────
 
+/** A pending destructive or slow action. `name: null` means every folder. */
+type Confirm = { kind: 'full'; name: string | null } | { kind: 'remove'; name: string };
+
+function FolderRow({ folder, st, busy, confirm, onRefresh, onRemove, onConfirm, onCancel }: {
+  folder: Folder;
+  st: Staleness;
+  busy: boolean;
+  confirm: Confirm | null;
+  onRefresh: () => void;
+  onRemove: () => void;
+  onConfirm: (c: Confirm) => void;
+  onCancel: () => void;
+}) {
+  const mine = confirm !== null && confirm.name === folder.name ? confirm : null;
+  return (
+    <div style={S.folderRow}>
+      <div style={S.folderHead}>
+        <span style={S.folderName} title={folder.path}>{folder.name}</span>
+        <span style={S.mutedSmallInline}>{folder.files} notes</span>
+        <span style={{ ...S.stale, ...TONE[st.tone] }}>{st.text}</span>
+        <span style={S.folderButtons}>
+          <button type="button" style={S.linkButton} disabled={busy || folder.changed === null} onClick={onRefresh}>
+            {st.needsFull ? 'Re-index' : 'Refresh'}
+          </button>
+          <button type="button" style={S.linkButton} disabled={busy} onClick={onRemove}>Remove</button>
+        </span>
+      </div>
+      {mine?.kind === 'full' && (
+        <ConfirmBar
+          text={`Re-embed all ${folder.files} notes in ${folder.name} with the new settings? This takes a while.`}
+          action="Re-index"
+          onConfirm={() => onConfirm(mine)}
+          onCancel={onCancel}
+        />
+      )}
+      {mine?.kind === 'remove' && (
+        <ConfirmBar
+          text={`Remove ${folder.name} from the index? The notes themselves are not touched.`}
+          action="Remove"
+          onConfirm={() => onConfirm(mine)}
+          onCancel={onCancel}
+        />
+      )}
+    </div>
+  );
+}
+
+function ConfirmBar({ text, action, onConfirm, onCancel }: {
+  text: string;
+  action: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div style={S.confirm}>
+      <span>{text}</span>
+      <span style={S.folderButtons}>
+        <button type="button" style={S.primary} onClick={onConfirm}>{action}</button>
+        <button type="button" style={S.button} onClick={onCancel}>Cancel</button>
+      </span>
+    </div>
+  );
+}
+
+
 function Offline({ error, url, onRetry }: { error: DaemonError; url: string; onRetry: () => void }) {
   return (
     <div style={S.centered}>
@@ -360,7 +603,7 @@ function ErrorBar({ error, onDismiss }: { error: DaemonError; onDismiss: () => v
   );
 }
 
-function Indexing({ job, onCancel }: { job: EmbedJob; onCancel: () => void }) {
+function Indexing({ job, queued, onCancel }: { job: EmbedJob; queued: number; onCancel: () => void }) {
   const progress = progressOf(job);
   const name = job.params.folders?.join(', ') ?? 'folder';
   const pct = progress === null || progress.total === 0 ? 0 : (100 * progress.done) / progress.total;
@@ -370,6 +613,7 @@ function Indexing({ job, onCancel }: { job: EmbedJob; onCancel: () => void }) {
         <span>
           Indexing <strong>{name}</strong>
           {progress === null ? ' — loading the model…' : ` — ${progress.done} / ${progress.total} files`}
+          {queued > 0 && <span style={S.mutedSmallInline}>{`  · ${queued} more after this`}</span>}
         </span>
         <button type="button" style={S.button} onClick={onCancel}>Cancel</button>
       </div>
@@ -562,6 +806,51 @@ const S: Record<string, React.CSSProperties> = {
   passageFull: { margin: '6px 0', whiteSpace: 'pre-wrap', userSelect: 'text', cursor: 'text' },
   mark: { background: 'var(--highlight-bg, #fde68a)', color: 'inherit', borderRadius: 2, padding: '0 1px' },
   hitFoot: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
+  scopeRow: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 6,
+    margin: '8px 0 12px',
+    fontSize: 12,
+    color: 'var(--chrome-muted, #71717a)',
+  },
+  chip: {
+    font: 'inherit',
+    fontSize: 12,
+    padding: '1px 10px',
+    borderRadius: 999,
+    border: '1px solid var(--chrome-border, #d4d4d8)',
+    background: 'transparent',
+    color: 'inherit',
+    cursor: 'pointer',
+  },
+  chipOn: { background: '#2563eb', borderColor: '#1d4ed8', color: '#fff' },
+  folders: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 6,
+    padding: '10px 12px',
+    marginBottom: 16,
+    borderRadius: 8,
+    border: '1px solid var(--chrome-border, #d4d4d8)',
+  },
+  folderRow: { display: 'flex', flexDirection: 'column', gap: 6 },
+  folderHead: { display: 'flex', alignItems: 'baseline', gap: 8, minWidth: 0 },
+  folderName: { fontWeight: 600, whiteSpace: 'nowrap' },
+  mutedSmallInline: { color: 'var(--chrome-muted, #71717a)', fontSize: 12, whiteSpace: 'nowrap' },
+  stale: { fontSize: 12, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  folderButtons: { marginLeft: 'auto', display: 'flex', gap: 4, flex: '0 0 auto' },
+  folderActions: { display: 'flex', gap: 8, marginTop: 4 },
+  confirm: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 12,
+    padding: '8px 10px',
+    borderRadius: 6,
+    background: 'var(--chrome-bg, #f4f4f5)',
+    fontSize: 12,
+  },
   path: {
     fontSize: 11,
     color: 'var(--chrome-muted, #71717a)',
@@ -570,6 +859,12 @@ const S: Record<string, React.CSSProperties> = {
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
   },
+};
+
+const TONE: Record<Tone, React.CSSProperties> = {
+  ok: { color: 'var(--chrome-muted, #71717a)' },
+  stale: { color: 'var(--warn-fg, #d97706)' },
+  warn: { color: 'var(--error-fg, #dc2626)' },
 };
 
 // ─── plugin ──────────────────────────────────────────────────
@@ -585,7 +880,13 @@ export const plugin: Plugin = {
     ctx.registerCommand('vault.search', async (...args: unknown[]) => {
       const query = typeof args[0] === 'string' ? args[0].trim() : '';
       await ctx.workspace.openPanel(PANEL_ID);
-      if (query !== '') requests.send({ query, limit: clampLimit(args[1]) });
+      if (query !== '') requests.send({ kind: 'search', query, limit: clampLimit(args[1]) });
+    });
+
+    // Positional: full. Changed files only unless asked; a full re-index is confirmed in the panel.
+    ctx.registerCommand('vault.reindex', async (...args: unknown[]) => {
+      await ctx.workspace.openPanel(PANEL_ID);
+      requests.send({ kind: 'reindex', full: args[0] === true });
     });
   },
 

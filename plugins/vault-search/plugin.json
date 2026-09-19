@@ -6,7 +6,8 @@
   "main": "./dist/index.js",
   "activationEvents": [
     "onCommand:vault.open",
-    "onCommand:vault.search"
+    "onCommand:vault.search",
+    "onCommand:vault.reindex"
   ],
   "contributes": {
     "panels": [
@@ -53,7 +54,24 @@
               "default": false
             }
           },
-          "required": ["query"]
+          "required": [
+            "query"
+          ]
+        }
+      },
+      {
+        "id": "vault.reindex",
+        "title": "Re-index the Vault",
+        "args": {
+          "type": "object",
+          "properties": {
+            "full": {
+              "type": "boolean",
+              "description": "Re-embed everything, not just changed files",
+              "default": false
+            }
+          },
+          "required": []
         }
       }
     ],
@@ -77,6 +95,11 @@
         "type": "number",
         "default": 512,
         "description": "Tokens per chunk, capped at the model's window (LaBSE: 254). Changing it invalidates the index."
+      },
+      "autoRefresh": {
+        "type": "boolean",
+        "default": true,
+        "description": "When the panel opens, re-index folders whose files changed. Off: only show how stale they are."
       }
     },
     "keybindings": [

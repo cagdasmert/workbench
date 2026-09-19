@@ -18,12 +18,13 @@ const manifest: PluginManifest = {
   version: '1.0.0',
   apiVersion: '1.0',
   main: './dist/index.js',
-  activationEvents: ['onCommand:vault.open', 'onCommand:vault.search'],
+  activationEvents: ['onCommand:vault.open', 'onCommand:vault.search', 'onCommand:vault.reindex'],
   contributes: {
     panels: [{ id: 'vault.main', title: 'Vault' }],
     commands: [
       { id: 'vault.open', title: 'Open Vault Search' },
       { id: 'vault.search', title: 'Search My Notes' },
+      { id: 'vault.reindex', title: 'Re-index the Vault' },
     ],
   },
 };
@@ -76,15 +77,15 @@ afterEach(() => {
 });
 
 describe('vault-search disposal', () => {
-  it('registers its panel and both commands through the context, and unwinds all of them', async () => {
+  it('registers its panel and three commands through the context, and unwinds all of them', async () => {
     const h = host();
     await h.invokeCommand('vault.open');
 
     expect(h.get(ID)?.state).toBe('active');
     expect(h.getPanel('vault.main')).toBeDefined();
-    // panel + vault.open + vault.search — anything more is a listener
-    // registered around the host, which is exactly what would leak.
-    expect(h.get(ID)?.disposables).toHaveLength(3);
+    // panel + vault.open + vault.search + vault.reindex — anything more is a
+    // listener registered around the host, which is exactly what would leak.
+    expect(h.get(ID)?.disposables).toHaveLength(4);
 
     await h.deactivate(ID);
 
@@ -97,7 +98,7 @@ describe('vault-search disposal', () => {
     const h = host();
     // No panel mounts under test, so the request stays queued.
     await h.invokeCommand('vault.search', 'kavram araması');
-    expect(requests.pending).toEqual({ query: 'kavram araması', limit: 8 });
+    expect(requests.pending).toEqual({ kind: 'search', query: 'kavram araması', limit: 8 });
 
     await h.deactivate(ID);
 
@@ -107,9 +108,19 @@ describe('vault-search disposal', () => {
   it('clamps a palette limit and ignores a blank query', async () => {
     const h = host();
     await h.invokeCommand('vault.search', 'x', 500);
-    expect(requests.pending).toEqual({ query: 'x', limit: 50 });
+    expect(requests.pending).toEqual({ kind: 'search', query: 'x', limit: 50 });
     requests.clear();
     await h.invokeCommand('vault.search', '   ');
+    expect(requests.pending).toBeUndefined();
+  });
+
+  it('queues a re-index for the panel, full only when asked', async () => {
+    const h = host();
+    await h.invokeCommand('vault.reindex');
+    expect(requests.pending).toEqual({ kind: 'reindex', full: false });
+    await h.invokeCommand('vault.reindex', true);
+    expect(requests.pending).toEqual({ kind: 'reindex', full: true });
+    await h.deactivate(ID);
     expect(requests.pending).toBeUndefined();
   });
 

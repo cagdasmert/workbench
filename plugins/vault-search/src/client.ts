@@ -125,6 +125,21 @@ export class VaultClient {
     return this.request('POST', '/v1/index/folders', req);
   }
 
+  /**
+   * Re-index one folder, or all of them with no name. Without `full` only
+   * changed files are re-embedded, with the folder's own settings. `model` and
+   * `chunk_size` only matter with `full`: the daemon refuses a settings change
+   * without it (409).
+   */
+  refresh(req: { name?: string; full?: boolean; model?: string; chunk_size?: number }): Promise<EmbedJob> {
+    return this.request('POST', '/v1/index/refresh', req);
+  }
+
+  /** Drops the folder from the index. The notes are never touched. POST, because net.fetch has no DELETE. */
+  removeFolder(name: string): Promise<{ ok: true }> {
+    return this.request('POST', `/v1/index/folders/${encodeURIComponent(name)}/remove`, {});
+  }
+
   /** The first search after a cold start loads the model in the worker — seconds, not milliseconds. */
   search(req: { query: string; limit?: number; folders?: string[] }): Promise<SearchResult> {
     return this.request('POST', '/v1/search', req, 60_000);

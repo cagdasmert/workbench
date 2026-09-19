@@ -1367,3 +1367,55 @@ green. Fixed in its own commit.
 - **Not yet verified in the running app:** folder pick → index → search, re-attach, and Copy link.
 
 **Contract impact:** none.
+
+---
+
+## 39 · Vault search M3: staleness, refresh, scope, and a POST that means delete
+
+**Plugin:** vault-search (vault PRD P2) · **Verdict:** PLUGIN ADAPTED — one daemon route, no SDK change
+
+**The first route shaped by `net.fetch`'s verbs.** M1 built `DELETE /v1/index/folders/<name>`,
+and the plugin cannot send it (entry 38). `POST /v1/index/folders/<name>/remove` now sits
+beside it and shares its handler. Widening `NetRequestInit.method` would have been an additive
+SDK bump, but a verb the broker has never carried is a new capability to reason about. The
+cost here was three lines of daemon.
+
+**Staleness is worded by the plugin, counted by the daemon.** `staleness.ts` is pure and has
+five outcomes: not indexed, unreachable (the drive is unmounted, `changed: null`), settings
+changed, up to date, and *N files changed*. The panel never reads a note to know any of them.
+
+**A settings change never re-indexes silently.** A plain refresh sends no model or chunk
+size, so the daemon uses the folder's own, and a changed `embedModel` cannot slip in through
+*Refresh*. A folder whose settings differ shows *Re-index* instead. It asks inline ("Re-embed
+all N notes… This takes a while") and only then sends `full: true` with the new settings. The
+daemon's 409 still guards the same line.
+
+**One job at a time, queued in the panel.** Refreshing several folders runs them in sequence
+from a queue the panel holds. The folders may use different models, and the daemon's
+one-job-per-model rule would refuse a second job on the same one anyway. A cancel or a
+failure empties the queue.
+
+**What `autoRefresh` means.** `changed` is always computed, so "check for changed files when
+the panel opens" needed a meaning. It is: once per mount, with nothing already running,
+refresh every folder that has changes *and* matching settings. A folder with changed settings
+waits for a click.
+
+**Scope.** With two or more folders, the folder names above the results are toggles. None
+selected means all. The selection is stored as names only and pruned when a folder
+disappears, so a removed folder cannot turn every later search into a 404.
+
+**Verified** with `curl` (the scratch index, a second daemon on :8078):
+- A 59-note copy added as a second folder.
+- One note edited: `changed: 1`. *Refresh* gave `embedded: 1`, then `changed: 0`.
+- A scoped search returned only that folder.
+- `POST …/remove` removed it.
+
+Tests: 2 new daemon tests (76 total) and 15 new plugin tests (158 total), including the
+disposal test at 4 disposables.
+
+**Not yet verified in the running app:** the folder list, confirms, chips, and autoRefresh.
+**Noticed:** a sentence appended to a long note is not found by its own words. It is packed
+into a chunk whose meaning the older text dominates. That is chunking working as designed,
+and a reason heading-level chunks matter.
+
+**Contract impact:** none.
