@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Hit } from './client.js';
-import { MAX_PASSAGES, answerMarkdown, buildMessages, cleanAnswer, hitsMarkdown, parseAnswer, pickLoadedModel } from './answer.js';
+import { MAX_PASSAGES, PROMPT_CHARS, answerMarkdown, buildMessages, cleanAnswer, hitsMarkdown, parseAnswer, pickLoadedModel } from './answer.js';
 
 function hit(n: number, over: Partial<Hit> = {}): Hit {
   return {
@@ -25,17 +25,44 @@ describe('buildMessages', () => {
     expect(system?.role).toBe('system');
     expect(system?.content).toMatch(/\[n\]/);
     expect(system?.content).toMatch(/language of the question/);
-    expect(user?.content).toContain('[1] Note 1 › Tedavi\nKetokonazol şampuan.');
+    expect(user?.content).toContain('[1] Note 1\n§ Tedavi\nKetokonazol şampuan.');
     expect(user?.content).toContain('[2] Note 2\npassage 2');
     expect(user?.content.trimEnd().endsWith('Question: Kepek için ne kullanılır?')).toBe(true);
   });
 
-  it('sends at most MAX_PASSAGES passages, each cut to size', () => {
+  it('sends at most MAX_PASSAGES notes, within the prompt budget', () => {
     const hits = Array.from({ length: 10 }, (_, i) => hit(i + 1, { chunk: 'x'.repeat(5_000) }));
     const user = buildMessages('q', hits)[1]?.content ?? '';
     expect(user).toContain(`[${MAX_PASSAGES}]`);
     expect(user).not.toContain(`[${MAX_PASSAGES + 1}]`);
-    expect(user.length).toBeLessThan(MAX_PASSAGES * 1_300 + 500);
+    expect(user.length).toBeLessThan(PROMPT_CHARS + 600);
+  });
+
+  it('groups a note\'s passages under its number, in reading order', () => {
+    const h = hit(1, {
+      title: 'Uzun',
+      passages: [
+        { heading: 'Uzun › Tedavi', chunk: 'ketokonazol', start_line: 40, score: 0.6 },
+        { heading: 'Uzun › Belirtiler', chunk: 'kepek', start_line: 10, score: 0.5 },
+      ],
+    });
+    const user = buildMessages('q', [h])[1]?.content ?? '';
+    expect(user).toContain('[1] Uzun\n§ Belirtiler\nkepek\n\n§ Tedavi\nketokonazol');
+    expect(user.match(/\[1\]/g)).toHaveLength(1);
+  });
+
+  it('spends the budget on every note\'s best passage before anyone\'s second', () => {
+    const big = (n: number) => hit(n, {
+      passages: [
+        { heading: '', chunk: `best${n} ${'b'.repeat(1_100)}`, start_line: 1, score: 0.9 },
+        { heading: '', chunk: `second${n} ${'s'.repeat(1_100)}`, start_line: 50, score: 0.8 },
+        { heading: '', chunk: `third${n} ${'t'.repeat(1_100)}`, start_line: 90, score: 0.7 },
+      ],
+    });
+    const user = buildMessages('q', [1, 2, 3, 4, 5, 6].map(big))[1]?.content ?? '';
+    for (let n = 1; n <= 6; n++) expect(user).toContain(`best${n}`);
+    expect(user).not.toContain('third6');
+    expect(user.length).toBeLessThan(PROMPT_CHARS + 600);
   });
 });
 

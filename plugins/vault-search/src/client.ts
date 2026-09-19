@@ -23,6 +23,14 @@ export interface Folder {
   changed: number | null;
 }
 
+/** One chunk of a note, as ranked for the query. */
+export interface Passage {
+  heading: string;
+  chunk: string;
+  start_line: number;
+  score: number;
+}
+
 export interface Hit {
   folder: string;
   /** Absolute. */
@@ -34,6 +42,8 @@ export interface Hit {
   chunk: string;
   score: number;
   start_line: number;
+  /** The note's best passages, best first; the fields above are `passages[0]`. Up to `per_note`. */
+  passages?: Passage[];
 }
 
 export interface SearchResult {
@@ -147,7 +157,7 @@ export class VaultClient {
   }
 
   /** The first search after a cold start loads the model in the worker — seconds, not milliseconds. */
-  search(req: { query: string; limit?: number; folders?: string[] }): Promise<SearchResult> {
+  search(req: { query: string; limit?: number; folders?: string[]; per_note?: number }): Promise<SearchResult> {
     return this.request('POST', '/v1/search', req, 60_000);
   }
 

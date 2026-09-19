@@ -12,7 +12,7 @@ import {
   type Hit,
   type SearchResult,
 } from './client.js';
-import { MAX_PASSAGES, answerMarkdown, buildMessages, hitsMarkdown, parseAnswer, type AnswerPart } from './answer.js';
+import { ANSWER_PER_NOTE, MAX_PASSAGES, answerMarkdown, buildMessages, hitsMarkdown, parseAnswer, type AnswerPart } from './answer.js';
 import { AnswerError, answerWith, type Answer, type AnswerSettings } from './llm.js';
 import { startPoller } from './poller.js';
 import { staleness, type Staleness, type Tone } from './staleness.js';
@@ -367,7 +367,13 @@ function VaultPanel({ ctx }: { ctx: PanelContext }) {
     const slowTimer = setTimeout(() => { if (seq === searchSeq.current) setSlow(true); }, SLOW_MS);
     if (remember) void ctx.plugin.storage.set('lastQuery', trimmed);
     try {
-      const res = await client.search({ query: trimmed, limit, ...(scope.length > 0 ? { folders: scope } : {}) });
+      const res = await client.search({
+        query: trimmed,
+        limit,
+        // Answer mode reads more of each note than the card shows (change log 41).
+        ...(withAnswer ? { per_note: ANSWER_PER_NOTE } : {}),
+        ...(scope.length > 0 ? { folders: scope } : {}),
+      });
       if (seq !== searchSeq.current) return;
       setResult({ query: trimmed, res });
       clearTimeout(slowTimer);

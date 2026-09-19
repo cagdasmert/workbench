@@ -1,4 +1,4 @@
-import type { Hit } from './client.js';
+import type { Hit, Passage } from './client.js';
 import { wikilink } from './text.js';
 
 /**
@@ -10,8 +10,19 @@ import { wikilink } from './text.js';
  * "every claim carries its source" mitigation (PRD §10).
  */
 
+/** Notes sent to the model — and so the highest card number a citation can name. */
 export const MAX_PASSAGES = 6;
+/**
+ * The whole prompt's passage text. LM Studio often runs a model with a 4k-token
+ * context; ~9,000 characters of mixed Turkish and English stays well inside
+ * it with room for the answer.
+ */
+export const PROMPT_CHARS = 9_000;
 const PASSAGE_CHARS = 1_200;
+/** A leftover budget smaller than this buys a fragment, not a passage. */
+const MIN_PIECE = 300;
+/** How many passages per note answer mode asks the daemon for. */
+export const ANSWER_PER_NOTE = 3;
 
 export interface ChatMessage {
   role: 'system' | 'user';
@@ -30,11 +41,51 @@ const SYSTEM = [
   'Answer in the language of the question. Be brief.',
 ].join('\n');
 
+function cut(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
+function passagesOf(h: Hit): Passage[] {
+  return h.passages !== undefined && h.passages.length > 0
+    ? h.passages
+    : [{ heading: h.heading, chunk: h.chunk, start_line: h.start_line, score: h.score }];
+}
+
+/** The part of a heading path the note's title does not already say. */
+function section(title: string, heading: string): string {
+  if (heading === '' || heading === title) return '';
+  return heading.startsWith(`${title} › `) ? heading.slice(title.length + 3) : heading;
+}
+
+/**
+ * One numbered block per note — its passages share the note's number, so a
+ * citation still names a card — with passages in reading order. The budget is
+ * spent by rank: every note's best passage first, then second-best passages,
+ * and so on, so a long note cannot crowd out the sixth note's only passage.
+ */
 export function buildMessages(query: string, hits: Hit[]): ChatMessage[] {
-  const passages = hits.slice(0, MAX_PASSAGES).map((h, i) => {
-    const label = h.heading !== '' ? h.heading : h.title;
-    const body = h.chunk.length > PASSAGE_CHARS ? `${h.chunk.slice(0, PASSAGE_CHARS)}…` : h.chunk;
-    return `[${i + 1}] ${label}\n${body}`;
+  const notes = hits.slice(0, MAX_PASSAGES).map((h) => ({ h, ranked: passagesOf(h) }));
+  const chosen: Array<Array<{ p: Passage; text: string }>> = notes.map(() => []);
+  let budget = PROMPT_CHARS;
+  const depth = Math.max(0, ...notes.map((n) => n.ranked.length));
+  for (let rank = 0; rank < depth; rank++) {
+    notes.forEach((n, i) => {
+      const p = n.ranked[rank];
+      if (p === undefined) return;
+      if (rank > 0 && budget < MIN_PIECE) return;
+      const text = cut(p.chunk, rank === 0 ? Math.min(PASSAGE_CHARS, Math.max(budget, MIN_PIECE)) : Math.min(PASSAGE_CHARS, budget));
+      chosen[i]?.push({ p, text });
+      budget -= text.length;
+    });
+  }
+  const passages = notes.map((n, i) => {
+    const pieces = [...(chosen[i] ?? [])]
+      .sort((a, b) => a.p.start_line - b.p.start_line)
+      .map(({ p, text }) => {
+        const sec = section(n.h.title, p.heading);
+        return sec === '' ? text : `§ ${sec}\n${text}`;
+      });
+    return `[${i + 1}] ${n.h.title}\n${pieces.join('\n\n')}`;
   });
   return [
     { role: 'system', content: SYSTEM },

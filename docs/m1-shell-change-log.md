@@ -1479,3 +1479,46 @@ hangi tedaviler öneriliyor?":
   paragraph routed from another panel.
 
 **Contract impact:** none.
+
+---
+
+## 41 · Answers read more of each note than the card shows
+
+**Plugin:** vault-search · **Verdict:** DAEMON + PLUGIN — no SDK change
+
+Entry 40 blamed the unfaithful citations on retrieval, specifically one passage per note:
+the chunk most *like* the question, often not the one that answers it. `/v1/search` now
+takes `per_note` (1–5, default 1). Each hit carries `passages`, that note's best chunks,
+best first. The hit's own fields stay `passages[0]`, and which notes come back does not
+depend on `per_note`, so cards are unchanged. Answer mode asks for 3.
+
+**The prompt groups passages by note.** A note's passages share its number, so `[n]` still
+names card n, and they appear in reading order under `§ section`. The passage text has a
+9,000-character budget, because LM Studio often runs a model with a 4k context. The budget
+is spent by rank: every note's best passage first, then second-best passages, and so on. A
+long note cannot crowd out the sixth note's only passage.
+
+**Measured** with `qwen/qwen3-coder-30b`, the same question as entry 40 ("Seboreik
+dermatit için hangi tedaviler öneriliyor?"):
+
+| | claims | fully supported by the cited passage |
+|---|---|---|
+| 1 passage per note (entry 40, stricter prompt) | 3 | 1 |
+| 3 passages per note | 9 cites over 7 claims | 7 |
+
+The treatment list (antifungals first-line, steroids for flares, tea tree oil as a
+supplemental option, phototherapy better in summer) sat in the note's second- and
+third-ranked chunks. The model had never seen it, and had filled the gap from memory.
+
+Two more questions, checked the same way:
+- **Video consistency:** every claim traced to its passage. One overstated its source: a
+  multi-agent crew the note lists as one of seven *candidate* architectures became "how
+  consistency is achieved".
+- **"Why was the contract frozen at 1.0":** grounded in the one retrieved note that
+  discusses the freeze. The answer tied it to a point that note makes for a different
+  reason.
+
+The remaining failures are framing, not invention. Retrieval choosing the wrong *notes*
+(entry 38) is untouched by this change and is still the ceiling.
+
+Tests: 5 new daemon tests (91 total) and 3 plugin tests rewritten or added (44 in the plugin).
