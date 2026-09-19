@@ -1,47 +1,13 @@
 import { dialog, ipcMain, type BrowserWindow } from 'electron';
 import { readFile, readdir, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
-import type { DirEntry, FileFilter } from '@workbench/plugin-sdk';
-
-/**
- * Paths the user explicitly chose through a file dialog, this session only.
- *
- * This is what makes the declared permission `fs:read:user-selected` mean
- * something. Without it, `fs:readFile` over the bridge is an arbitrary-file-read
- * primitive handed to the renderer — the exact thing architecture §9 says must
- * never cross. Nothing is persisted; a restart starts from zero grants.
- */
-const grantedFiles = new Set<string>();
-
-/**
- * Directories the user chose. Picking a folder grants everything inside it —
- * a broader grant than picking a file, and the only way a folder browser can
- * work at all.
- *
- * Both sets hold **symlink-resolved** paths, and every read resolves before
- * checking. Without that, a symlink inside a granted folder pointing at
- * ~/.ssh would be readable: the string would sit under the granted prefix while
- * the actual file does not.
- */
-const grantedDirs = new Set<string>();
-
-async function assertReadable(target: string): Promise<string> {
-  let real: string;
-  try {
-    real = await realpath(target);
-  } catch {
-    throw new Error(`fs:read denied — "${target}" does not exist`);
-  }
-
-  if (grantedFiles.has(real)) return real;
-  for (const dir of grantedDirs) {
-    const rel = path.relative(dir, real);
-    if (rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel)) return real;
-  }
-  throw new Error(
-    `fs:read denied — "${target}" is not inside anything granted this session`,
-  );
-}
+import type { CopyResult, DirEntry, FileFilter } from '@workbench/plugin-sdk';
+import {
+  assertReadable, assertWritableDir, deniedWriteReason, grantFile, grantReadDir,
+  grantWriteDir, isReadDirGranted,
+} from './fs-grants.js';
+import { copyFileExclusive } from './fs-copy.js';
+import { assertMayWrite } from './fs-permissions.js';
 
 /** The renderer is a local RPC boundary. Treat every argument as hostile. */
 function sanitizeFilters(raw: unknown): FileFilter[] | undefined {
@@ -79,7 +45,7 @@ export function registerFsBroker(getWindow: () => BrowserWindow | null): void {
     const picked = result.canceled ? undefined : result.filePaths[0];
     if (picked === undefined) return undefined;
 
-    grantedFiles.add(await realpath(picked));   // the dialog IS the grant
+    grantFile(await realpath(picked));   // the dialog IS the grant
     return picked;
   });
 
@@ -93,7 +59,46 @@ export function registerFsBroker(getWindow: () => BrowserWindow | null): void {
     const picked = result.canceled ? undefined : result.filePaths[0];
     if (picked === undefined) return undefined;
 
-    grantedDirs.add(await realpath(picked));
+    grantReadDir(await realpath(picked));
+    return picked;
+  });
+
+  ipcMain.handle('fs:pickDirectoryForWrite', async (
+    _event,
+    rawPluginId: unknown,
+    rawDefaultPath: unknown,
+  ) => {
+    if (typeof rawPluginId !== 'string') {
+      throw new Error('fs:pickDirectoryForWrite expects a plugin id');
+    }
+    // Refusing before the modal appears is the point: an unpermissioned plugin
+    // must not be able to put a dialog on screen at all, let alone have its
+    // confirmation add to the session-global write grants.
+    assertMayWrite(rawPluginId);
+
+    const win = getWindow();
+    const options = {
+      properties: ['openDirectory' as const, 'createDirectory' as const],
+      buttonLabel: 'Copy Here',
+      // Only positions the dialog. The plugin supplies it from its own recent
+      // list, so it is untrusted — which is fine, because the grant is still
+      // whatever the user confirms, and that result is deny-list checked below.
+      ...(typeof rawDefaultPath === 'string' ? { defaultPath: rawDefaultPath } : {}),
+    };
+    const result = win === null
+      ? await dialog.showOpenDialog(options)
+      : await dialog.showOpenDialog(win, options);
+
+    const picked = result.canceled ? undefined : result.filePaths[0];
+    if (picked === undefined) return undefined;
+
+    const real = await realpath(picked);
+    const reason = deniedWriteReason(real);
+    if (reason !== null) {
+      throw new Error(`fs:write denied — "${picked}" is ${reason}`);
+    }
+
+    grantWriteDir(real);   // the dialog IS the grant
     return picked;
   });
 
@@ -105,7 +110,7 @@ export function registerFsBroker(getWindow: () => BrowserWindow | null): void {
     const real = await realpath(rawPath).catch(() => {
       throw new Error(`fs:readDir — "${rawPath}" does not exist`);
     });
-    if (!grantedDirs.has(real)) await assertReadable(rawPath);
+    if (!isReadDirGranted(real)) await assertReadable(rawPath);
 
     const entries = await readdir(real, { withFileTypes: true });
     const out: DirEntry[] = [];
@@ -135,5 +140,23 @@ export function registerFsBroker(getWindow: () => BrowserWindow | null): void {
     }
     const real = await assertReadable(rawPath);
     return await readFile(real);
+  });
+
+  ipcMain.handle('fs:copyFile', async (
+    _event,
+    rawPluginId: unknown,
+    rawSource: unknown,
+    rawDestDir: unknown,
+  ): Promise<CopyResult> => {
+    if (typeof rawPluginId !== 'string') throw new Error('fs:copyFile expects a plugin id');
+    if (typeof rawSource !== 'string') throw new Error('fs:copyFile expects a source path');
+    if (typeof rawDestDir !== 'string') throw new Error('fs:copyFile expects a destination path');
+
+    // Order matters: cheapest and most categorical check first.
+    assertMayWrite(rawPluginId);
+    const source = await assertReadable(rawSource);
+    const destDir = await assertWritableDir(rawDestDir);
+
+    return await copyFileExclusive(source, destDir);
   });
 }

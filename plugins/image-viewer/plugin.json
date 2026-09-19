@@ -43,6 +43,7 @@
     ]
   },
   "permissions": [
-    "fs:read:user-selected"
+    "fs:read:user-selected",
+    "fs:write:user-selected"
   ]
 }

@@ -975,267 +975,59 @@ and still works, so nothing that used it needed touching.
 
 ---
 
-## 31 · A plugin that needed a subprocess, and got none
+## 31 · The first write, and the flag that keeps it inside its grant
 
-**Plugin:** model-manager · **Verdict:** PLUGIN ADAPTED — no shell change, no SDK change
+**Feature:** image viewer copy-to-folder · **Verdict:** SDK 1.6 → 1.7, additive — and the end
+of the M1 contract freeze
 
-`modelctl` is a Python CLI that owns two Hugging Face cache roots (internal SSD, external
-drive) and moves models between them. Putting a panel on it is the first plugin whose
-underlying capability the host does not have at all: it needs to *run a program*.
+Copying files cannot be done inside a plugin: the `fs` surface was read-only end to end. This
+adds `pickDirectoryForWrite` and `copyFile`, the first write path in the app.
 
-**What I wanted.** `ctx.proc.run('modelctl', ['ls'])`, brokered through main like `fs` and
-`net` already are, gated on a `proc:run:modelctl` permission. Perhaps fifty lines in
-`packages/main`, and an obvious additive SDK bump — 1.6 → 1.7.
+**Write grants are a separate set from read grants.** Reusing `grantedDirs` would have been
+fewer moving parts and would have silently made every folder the user opened to *browse* into a
+folder any plugin could *write to*. Entry 30 established that picking a folder is a bigger
+promise than picking a file; picking a folder to write to is bigger still, and gets its own set.
 
-**Why it didn't happen.** `fs` and `net` are narrow by construction: `readFile` serves only
-paths granted by a picker this session (entries 2 and 30), and `net.fetch` reaches only hosts
-a manifest names. Neither can be widened by the plugin at runtime. A `proc` capability has no
-comparable natural narrowing — `proc:run:modelctl` sounds specific but the argument vector is
-the actual power, and enumerating safe argument shapes in a manifest is a policy engine, which
-D5 explicitly deferred. Worse, invariant 9 says main never executes plugin code; spawning a
-process *chosen by* a plugin is a short walk from that line, and the walk gets shorter with
-every plugin that asks.
+**`COPYFILE_EXCL` is a security control, not a data-safety nicety.** This was verified rather
+than assumed, and the result was worse than expected:
 
-**What happened instead.** `modelctl serve` — a loopback HTTP daemon in front of the same
-catalog — and the plugin reaches it through the `net.fetch` broker it already had, declaring
-`net:fetch:127.0.0.1:8077`. This is exactly the shape `ai-provider` already uses for LM Studio
-and Ollama (entry 24), which is the strongest evidence it is right: the second plugin to need a
-local backend reached for the same seam without the seam being designed for it.
+| destination is… | plain copy | with `COPYFILE_EXCL` |
+|---|---|---|
+| a symlink to a file outside the grant | **followed — the outside file is destroyed** | refused `EEXIST` |
+| a dangling symlink outside the grant | **followed — a file is created outside the grant** | refused `EEXIST` |
 
-**What the constraint bought.** Three things that a `proc` capability would not have:
+A symlink planted at the destination filename turns a copy into a write anywhere on disk.
+`O_CREAT|O_EXCL` fails on an existing path including a symlink, even a dangling one, which is
+what closes it. So the auto-rename loop must never fall back to a non-exclusive copy on its last
+attempt — it gives up instead. Both cases are asserted in `fs-copy.test.ts`.
 
-- The daemon runs read operations in-process but shells `pull`/`mv`/`rm` back through the CLI,
-  so a 40 GB download that dies takes a subprocess with it, not the server — and the CLI stays
-  the single implementation of what a move actually is.
-- Long operations became **jobs** rather than requests, because a brokered fetch is
-  request/response and has nowhere to stream. A pull returns a job id; the panel polls. That is
-  strictly better than streaming here: a download now survives closing the panel, and a job
-  started from the command palette shows up in a panel opened ten minutes later.
-- The transport is confined to one file. `client.ts` is the only thing that knows HTTP exists;
-  if `ctx.proc` is ever justified by a different plugin, this one changes in one place.
+**A write primitive can reach the plugin directory.** M4 loads plugins from
+`~/Library/Application Support/Workbench/plugins/`. A write that can target it lets a plugin
+install another plugin that runs on next launch, with no prompt — a one-session bug becomes
+permanent. Hence a destination deny-list, where that path is the entry that matters and
+LaunchAgents, `.ssh` and the shell dotfiles are the same class with less blast radius. The
+home directory itself is refused as too broad; folders inside it are fine. The deny-list also
+refuses anything above the home directory, plus `/Applications`, `/System`, `/Library`, `/usr`,
+`/bin`, `/sbin`, and `/etc` — preventing both absolute escapes and system directories.
+Deliberately allowed: `/private` and `/var`, because `os.tmpdir()` resolves under `/private/var`
+on macOS, and `/Volumes`, because an external drive is a normal place to copy photos to.
 
-**The one real cost.** A manifest declares hosts statically, so the `daemonUrl` setting can
-only be pointed at ports already listed in `plugin.json`. That is the permission model working
-as designed rather than a defect, but it is a setting the shell will render as freely editable
-and the daemon will refuse — so the client detects a denied host specifically and says which
-file needs the new entry, instead of reporting it as an unreachable server.
+**Not implemented: the spec's "running app bundle" entry.** Only `/Applications` is covered, so
+an app run from `~/Applications` or `~/Downloads` has an unprotected bundle. Recorded as a
+conscious gap, not an oversight — the app itself is not expected to run from either place, and
+closing it needs the running executable's own path, not a fixed list.
 
-**Contract impact:** none. `packages/plugin-sdk/src/index.ts` untouched, `packages/shell`
-untouched, `packages/main` untouched. The panel uses `net`, `settings`, `storage`, `bus`,
-`workspace`, `ui` and `log` exactly as frozen.
+**`fs` gained its first per-plugin check.** Reads are still session-global — any loaded plugin
+can read a path another was granted, which is a known gap. Writes are not: `fs:write:user-selected`
+is checked per plugin against the manifests, the way `net:fetch:<host>` already was.
 
-**Reserved, not built.** `/v1/generate/*` on the daemon answers 501 today. Video and TTS
-runtimes mount there when their scripts exist, so a TTS plugin is a panel and a route, not a
-second transport.
+**Known limitation, recorded rather than hidden.** The destination directory is resolved at
+check time and used at copy time. A local attacker able to swap it for a symlink in between
+could redirect the write. Closing it needs directory-handle-relative writes, which Node does not
+expose. Accepted for a local single-user app.
 
----
+**⌘A had to be shared with the shell.** The Edit menu binds ⌘A app-wide through `role: 'editMenu'`, and macOS resolves a native key equivalent outside the DOM, so a plugin's `preventDefault` cannot reliably claim it. Rather than guess which handler wins, the strip is `user-select: none` — whichever fires, the visible result is the plugin's selection and nothing else. A real fix would be a `before-input-event` interceptor in the shell, which is a shell change and not this feature's to make.
 
-## 32 · Transcribe M1: the first route under `/v1/generate`
-
-**Plugin:** transcribe (vault PRD P1) · **Verdict:** DAEMON ONLY — no workbench code yet
-
-The wire before the panel: `asr.py` beside `modelctl.py`, and three routes on `modelctld`.
-Design deltas over the PRD are in `docs/superpowers/specs/2026-09-11-transcribe-design.md`.
-
-**A job needed a second output channel.** The job runner only ever captured stdout lines into
-a 400-line deque — right for a pull's progress, useless for a two-hour transcript. `start_job`
-now takes a `result_path`: the daemon hands the script a temp file, loads it into `job.result`
-on exit 0, and always deletes it. Exit 0 with no readable result is a *failed* job, not a done
-one with nothing in it. `result` rides only on `GET /v1/jobs/<id>`; the list stays light and
-carries `params` instead, which is what a panel re-attaching needs to show a file name.
-
-**Validation runs in-process, transcription never does.** `asr.py`'s top level is the capability
-table, the checks and the markdown renderer; MLX is imported inside the runtime functions. So
-the daemon imports it and refuses Parakeet + Turkish with a 400 *before a job exists*, from the
-same table the CLI uses — the PRD's "one source of truth, checked in both places" without a
-second Python copy.
-
-**What fell out of the existing machinery for free:**
-
-- One-job-per-repo already keys on the repo, and for generation the repo is the model — so a
-  second run on a busy model is a 409 naming the running job, and so is a run while that model
-  is being moved. The PRD's "queue the rest" is deferred; 409 is the existing guarantee.
-- `PERCENT_RE` already parses tqdm, and mlx-whisper's only progress signal is its own tqdm bar
-  (shown only when `verbose is False` — `None` is silent). A 246 s file reported 0→100 in ten
-  monotonic steps with no new parsing code. Parakeet has a real `chunk_callback`; `asr.py`
-  turns it into the same `NN%` lines.
-
-**Added to the PRD's contract:** `GET /v1/generate/asr/probe` (size, duration, `has_audio` via
-`ffprobe`) — the panel's *Configured* state shows duration and size, and a plugin cannot stat a
-file. `POST /v1/generate/asr` returns the job dict like `pull` does, not a bare `{job_id}`.
-Video input needs nothing: both runtimes decode through `ffmpeg`, which is checked up front
-(503, `brew install ffmpeg`).
-
-**Verified** with `curl` against a Turkish memo made with `say -v Yelda`: turbo returned it
-word-perfect (`saat 9'da`), auto-detect chose `tr`, save wrote front matter plus `[00:00]` lines
-and a second save landed on `-2`. 34 stdlib `unittest` tests in the daemon repo, no weights
-needed. **Not yet exercised:** the Parakeet runtime path — its weights are not downloaded; the
-refusal path is tested, the transcription path is not.
-
-**Contract impact:** none. Workbench is untouched so far.
-
----
-
-## 33 · Transcribe M2: the panel, and the drop target that cannot exist
-
-**Plugin:** transcribe · **Verdict:** PLUGIN ADAPTED — no shell change, no SDK change
-
-Pick, probe, run, poll, render, against the M1 routes. Plan:
-`docs/superpowers/plans/2026-09-11-transcribe-m2-panel.md`.
-
-**The PRD asked for a drop target, and the contract says no.** Electron ≥32 removed `File.path`;
-the only way to get a path for a dropped file is `webUtils.getPathForFile`, which lives in the
-preload. Exposing it to plugins means passing a `File` across the plugin boundary — invariant 2
-— and the alternative, reading the bytes, is exactly what C2 and C3 rule out for a two-hour
-recording. So the empty state is **Choose file…**, which is a consent gesture that yields a path
-string (C2 working as designed). If drops are ever wanted, the shape is a shell-owned drop zone
-that grants the path the way `pickFile` does — a decision, not a patch.
-
-**The poll loop is an object, not an effect.** `startPoller({fetch, onValue, onError, next})`
-returns `{stop}`, and `stop()` also drops the answer to a request already in flight. That is the
-part a hook gets wrong silently (one `setState` after unmount), and the part that can be tested
-without a DOM — four fake-timer tests, the seed of M4's disposal test. A poll error is not a
-failed job: it retries (the daemon may be restarting), except a 404, which means the daemon did
-restart and forgot the job, and says so.
-
-**A command must not emit into an empty room.** `transcribe.file` calls `openPanel` then hands
-the panel a request, but `openPanel` resolves before React has mounted anything. The request goes
-into a one-slot mailbox that the panel drains on mount, instead of a listener set that is empty
-at that moment. `model-manager`'s `channel()` has the same race; it has not bitten because its
-commands are rarely the thing that opens the panel.
-
-**Errors carry a kind.** `DaemonError.kind` is `offline | denied | protocol | api`, and only
-`offline` gets the full "start the daemon" view — acceptance 4 is one branch, not a string match.
-
-**Verified in the app:** daemon down → "The transcription daemon isn't running" with the start
-command, no spinner; Retry after starting it → empty state; Choose file… (audio/video filter) →
-`4 min 6 s · 2.3 MB`; Transcribe → bar and mlx-whisper's own tqdm line at 1 s polls → 102
-timestamped segments, "Turkish · 4 min 6 s of audio in 51 s"; Copy all and per-line copy put
-the right text on the clipboard. Session restore reopened the panel on relaunch. 43 tests, `tsc -b`
-clean.
-
-**Contract impact:** none. `vitest.config.ts` now also collects `plugins/*/src/**/*.test.ts`.
-
----
-
-## 34 · Transcribe M3: saving without a write capability
-
-**Plugin:** transcribe · **Verdict:** PLUGIN ADAPTED — no shell change, no SDK change
-
-*Save to vault*, the folder picker, and the five-item `recent` list. Plan:
-`docs/superpowers/plans/2026-09-11-transcribe-m3-vault.md`.
-
-**C1 held without strain.** The plugin sends `{job_id, dir, timestamps}`; the daemon renders the
-note from its own job record, exclusive-creates it (`name.md`, then `name-2.md`), and answers
-with the path. The panel never holds the bytes on the way to disk and never needs to: the button
-becomes *Saved as 2026-09-11 memo-tr.md* with the folder under it, click to copy the path.
-
-**`pickDirectory` is used for its path, not its grant.** The folder chosen on first save is kept
-in `storage.vaultDir` and reused across restarts — the read grant it carries expires with the
-session and is never used, which is C2 exactly: the picker is consent plus a path chooser.
-
-**No "reveal".** C1 imagined a reveal affordance; the SDK has no `openPath`, and a plugin asking
-the shell to open arbitrary paths is a capability decision, not a convenience. The path is shown
-and copyable instead.
-
-**`recent` is narrowed at the storage boundary.** `parseRecent(unknown)` drops malformed entries
-rather than trusting storage, `addRecent` dedupes by job and keeps a known `savedPath`, and the
-list is metadata only — the transcript lives in the daemon until restart and on disk once saved.
-`savedPath` is what makes the restart case humane: reopening a forgotten job says so *and* names
-the saved copy.
-
-**Verified in the app**, into a scratch folder: first save asked for a folder and wrote
-`2026-09-11 memo-tr.md` with front matter and `[00:00]`; a second run saved to `-2` without
-asking; `Recent` listed both, newest first, marked saved; a plugin hot reload remounted the panel
-and `recent` came back from `plugin-data/transcribe.json` (which held no transcript text); after a
-daemon restart, reopening an entry showed the forgotten-job message with the saved path. Found and
-fixed on the way: a long vault path truncated the *change* link off the end of its line.
-
-**Contract impact:** none.
-
----
-
-## 35 · Transcribe M4: the trap, the exit, the bus, and coming back
-
-**Plugin:** transcribe (+ a one-handler fix in ai-provider) · **Verdict:** PLUGIN ADAPTED — no
-shell change, no SDK change
-
-The capability warning, cancel, *Send to…*, re-attach, and the disposal test. PRD §10 acceptance
-1–6 all verified in the app or under test.
-
-**The Parakeet trap is caught twice, once per side.** `capabilities.ts` mirrors `asr.py`'s
-table: Parakeet + Turkish is a red *block* (Transcribe disabled, one-click "Use Whisper"), Parakeet
-+ auto is an amber *caution* — it cannot know the audio is Turkish. The daemon still refuses the
-pair with a 400, so the mirror drifting is an annoyance, not a mistranscription. Found on the way:
-inline styles have no `:disabled`, so a disabled primary button looked live — it now says so.
-
-**Re-attach: the daemon is asked, not remembered.** `pickReattach(jobs, seen)` is pure and tested:
-a running asr job wins; otherwise the newest one if it finished *while no panel was watching* and
-is not in `recent`. The second half came out of the gate, not the plan — a 48 s job finished
-during a panel switch and the reopened panel came back empty, with the transcript reachable
-nowhere, because `recent` is only written by a mounted panel watching completion. Failures are
-never reopened; an old error greeting every visit is worse than silence. Verified: a job started
-by `curl`, panel switched away and back → attached at 61 % with the bar where it was; a job that
-completed while JSON Tools was showing → opened on return.
-
-**Cancel is `POST /v1/jobs/<id>/cancel`, which already existed** for pulls. The cancelled view
-says where it stopped and shows no log — something chosen is not something that failed.
-
-**Send to… found a bug in the receiver.** ai-provider's `onReceive` pushed the text to its
-panel's listeners and returned `{handled: true}`. The shell mounts one panel at a time, so while
-the sender's panel is showing there are no listeners — and `handled` short-circuits the host
-before it opens the receiver's panel. Every send from another panel vanished. It now declines
-when nobody is listening, the host opens the AI panel with the content as payload, and the text
-arrives prefilled. Any plugin with a module-level listener set and a `handled` return has the
-same hole; `model-manager`'s `channel()` is the other one in the tree.
-
-**The disposal test runs the real plugin in the real host** (`plugin.test.ts`, test-only
-dependency on `@workbench/plugin-host`): exactly three registrations — panel and two commands —
-all gone after `deactivate`; an undrained command request does not survive into the next
-activation (`deactivate` clears the mailbox); activation alone never touches the network. The
-poller's own four tests cover the half that needs a mounted panel, and the daemon log confirmed it
-live: polling stopped the moment the panel unmounted.
-
-**Contract impact:** none. Workbench tests 33 → 68; daemon repo 34.
-
----
-
-## 36 · The other listener set, and the request it was dropping
-
-**Plugin:** model-manager · **Verdict:** PLUGIN ADAPTED — no shell change, no SDK change
-
-Entry 35 named this one on its way past: "`model-manager`'s `channel()` is the other one in the
-tree." It was. Closed here with the same `mailbox<T>()` transcribe got.
-
-**`openPanel` resolves when the panel is asked for, not when React has rendered it.** The shell's
-PanelHost mounts one panel at a time through an async queue, so `await ctx.workspace.openPanel`
-returns with the mount still pending. `model.search` and `model.pull` then emitted into a
-listener `Set` that was still empty, and a `Set` with no listeners drops silently — no error, no
-log, nothing to notice. The bug only appeared when *the command was what opened the panel*:
-invoked against an already-open Models panel it worked every time, which is exactly why it
-survived this long.
-
-**A one-slot mailbox instead.** `send` hands the request to the listener if there is one and
-otherwise holds it; `receive` takes the slot and drains whatever is waiting synchronously, so a
-panel that mounts late gets the request the moment it subscribes. `deactivate` clears both
-mailboxes — module state is ours to unwind even though registrations are the host's (invariant
-8), and a request nobody drained must not surface in the next activation.
-
-**The subscription had to stop moving.** The old effects re-subscribed whenever `runSearch`,
-`act` or `client` changed. Against a set that is harmless; against a single-slot mailbox the
-cleanup drops the listener a queued request is about to be handed to. So both handlers moved into
-refs, assigned during render, with the effects subscribing once on `[]` — transcribe's shape at
-`index.tsx:298`, and now the reason it is that shape is written down twice.
-
-**A trap the tests hit first:** the mailbox listener is module state too, so a test that
-subscribed and never unsubscribed swallowed the *next* test's request and made a real assertion
-pass for the wrong reason. `afterEach` now releases both slots as well as clearing them. `clear()`
-deliberately does not drop the listener — in the app React's effect cleanup owns that, and
-diverging from transcribe here would buy nothing.
-
-**Reproduced before it was fixed**, as a test rather than by hand: invoke `model.search` with no
-panel subscribed, then subscribe — zero calls. Nine tests now cover it, including the four-
-registration disposal check model-manager never had, both delivery orders, unsubscribe, and the
-two argument guards (empty query, missing repo) that must not queue anything.
-
-**Contract impact:** none. Workbench tests 68 → 77.
+**Contract impact:** additive. `pickDirectoryForWrite`, `copyFile`, `CopyResult`. Nothing
+existing changed shape — but the freeze that held from M1 to M4 is now formally over, replaced
+by "additive minor bumps, existing signatures immovable" (CLAUDE.md, 2026-08-21).

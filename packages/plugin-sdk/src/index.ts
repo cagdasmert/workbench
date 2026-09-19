@@ -1,12 +1,14 @@
 /**
- * @workbench/plugin-sdk 1.0 — FROZEN.
+ * @workbench/plugin-sdk 1.7.
  *
  * Earned, not declared: mermaid, image, and JSON viewers were all built against
- * this surface without a single change to `packages/shell` (decision D8).
+ * this surface without a single change to `packages/shell` (decision D8), and
+ * the freeze held from M1 through M4 on that evidence.
  *
- * From here, changes to `PluginContext` are versioned decisions, not drive-by
- * edits. Additive methods are a minor bump; changing or removing anything below
- * is a major bump plus a migration note in the architecture decision log.
+ * The contract is open again, additively: existing signatures do not move.
+ * Changes to `PluginContext` are still versioned decisions, not drive-by edits
+ * — additive methods are a minor bump, but altering or removing anything below
+ * is still a major bump plus a migration note in the architecture decision log.
  */
 
 // ─── lifecycle ───────────────────────────────────────────────
@@ -109,6 +111,31 @@ export interface PluginContext {
      * `createImageBitmap` or a `DataView` without a cast or a defensive copy.
      */
     readFile(path: string): Promise<Uint8Array<ArrayBuffer>>;
+
+    /**
+     * Grants write access to the chosen directory for this session. Deliberately
+     * separate from `pickDirectory`: browsing a folder must never make it
+     * writable, so the two grant sets never mix.
+     *
+     * `defaultPath` only positions the dialog. It is a convenience for offering
+     * recent destinations and confers nothing on its own — the grant is still
+     * the user confirming the dialog.
+     */
+    pickDirectoryForWrite(defaultPath?: string): Promise<string | undefined>;
+
+    /**
+     * Copies one file into a directory granted by `pickDirectoryForWrite`.
+     *
+     * Never overwrites. On a name collision the copy lands as `name-1.ext`,
+     * `name-2.ext`, and the name actually written comes back in the result.
+     * That is not politeness about user data: the copy is exclusive-create, and
+     * refusing an existing destination is what stops a symlink planted at the
+     * destination filename from redirecting the write outside the grant.
+     *
+     * One file per call. The plugin loops and owns its own concurrency, for the
+     * same reason `readDir` does not recurse.
+     */
+    copyFile(sourcePath: string, destDir: string): Promise<CopyResult>;
   };
 
   /**
@@ -269,6 +296,12 @@ export interface DirEntry {
   size: number;
   /** Epoch millis, so a plugin can sort by date without another round trip. */
   modified: number;
+}
+
+export interface CopyResult {
+  /** Basename actually written. Differs from the source on a collision. */
+  name: string;
+  renamed: boolean;
 }
 
 /** Extensions carry no leading dot: `['png', 'jpg']`. */

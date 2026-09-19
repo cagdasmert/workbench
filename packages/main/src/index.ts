@@ -9,6 +9,7 @@ import { buildMenu } from './menu.js';
 import { installContextMenu } from './context-menu.js';
 import { watchPluginBuilds } from './watcher.js';
 import { registerFsBroker } from './fs-broker.js';
+import { loadFsPermissions } from './fs-permissions.js';
 import { registerStorageBroker } from './storage-broker.js';
 import { registerNetBroker, loadNetPermissions } from './net-broker.js';
 import { registerSettingsBroker, loadSettingsSchemas } from './settings-broker.js';
@@ -131,6 +132,7 @@ app.whenReady().then(async () => {
   for (const m of manifests) console.log('[plugins] manifest:', JSON.stringify(m));
 
   loadNetPermissions(manifests);
+  loadFsPermissions(manifests);
   loadSettingsSchemas(manifests);
 
   ipcMain.handle('plugins:list', () => manifests);
