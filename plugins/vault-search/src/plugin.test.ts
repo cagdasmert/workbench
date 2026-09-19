@@ -77,15 +77,16 @@ afterEach(() => {
 });
 
 describe('vault-search disposal', () => {
-  it('registers its panel and three commands through the context, and unwinds all of them', async () => {
+  it('registers its panel, three commands and a bus handler through the context, and unwinds all of them', async () => {
     const h = host();
     await h.invokeCommand('vault.open');
 
     expect(h.get(ID)?.state).toBe('active');
     expect(h.getPanel('vault.main')).toBeDefined();
-    // panel + vault.open + vault.search + vault.reindex — anything more is a
-    // listener registered around the host, which is exactly what would leak.
-    expect(h.get(ID)?.disposables).toHaveLength(4);
+    // panel + vault.open + vault.search + vault.reindex + bus.onReceive —
+    // anything more is a listener registered around the host, which is
+    // exactly what would leak.
+    expect(h.get(ID)?.disposables).toHaveLength(5);
 
     await h.deactivate(ID);
 
@@ -122,6 +123,22 @@ describe('vault-search disposal', () => {
     expect(requests.pending).toEqual({ kind: 'reindex', full: true });
     await h.deactivate(ID);
     expect(requests.pending).toBeUndefined();
+  });
+
+  it('turns answer on only when the command asks for it', async () => {
+    const h = host();
+    await h.invokeCommand('vault.search', 'soru', 3, true);
+    expect(requests.pending).toEqual({ kind: 'search', query: 'soru', limit: 3, answer: true });
+    await h.deactivate(ID);
+  });
+
+  it('declines routed text while no panel listens, so the host opens the panel with it', async () => {
+    const h = host();
+    await h.invokeCommand('vault.open');
+    // The host's own delivery: activate, run onReceive handlers in order.
+    await h.deliver(ID, { type: 'text/plain', data: 'Bir paragraf.' });
+    expect(requests.pending).toBeUndefined();
+    await h.deactivate(ID);
   });
 
   it('touches the network only from a mounted panel, never from activation', async () => {

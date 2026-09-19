@@ -1419,3 +1419,63 @@ into a chunk whose meaning the older text dominates. That is chunking working as
 and a reason heading-level chunks matter.
 
 **Contract impact:** none.
+
+---
+
+## 40 · Vault search M4: answers, and what a citation is worth
+
+**Plugin:** vault-search (vault PRD P2) · **Verdict:** PLUGIN ADAPTED — one daemon route, no SDK change
+
+**The answer is built in the plugin, asked of two backends.** `answer.ts` numbers the top
+six passages exactly as the cards are numbered, so `[2]` and the second card are the same
+note by construction. `llm.ts` asks LM Studio first. With `answerModel` empty it reads LM
+Studio's own `/api/v0/models` for the loaded model, because the OpenAI-compatible
+`/v1/models` lists every downloaded model and cannot say which one is loaded. When LM Studio
+is unreachable, or has nothing loaded, the answer goes to `POST /v1/generate/text`: a new
+`text` job running `text.py` (mlx-lm) over a catalog model, which P6 can extend. An error LM
+Studio *returns* is shown, not rerouted to a smaller model.
+
+**Local models fail in ways the plugin now names:**
+- **GLM-4.7-flash** reasoned through its whole 1,024-token budget and returned an empty
+  `content`. That is now an error saying so, with a hint to use a non-reasoning model.
+- **The same model under LM Studio also ignores its stop token.** It writes `<|user|>` and
+  the user's next turn itself until the budget runs out. `cleanAnswer` cuts the reply at the
+  first leaked template token.
+- **The 0.6B fallback** (`mlx-community/Qwen3-0.6B-4bit`, the only MLX text model on the
+  internal drive) runs the whole path in about 4 s. Its answers are nonsense ("[6]
+  Seboreik dermatit için, [1] ve [6] notlarıyla bilinir"). The fallback is wired and
+  verified; the model behind it needs replacing (`fallbackModel`).
+
+**PRD §11.4 ("answer mode cites notes that actually contain the claims made") is only
+partly met.** Checked claim by claim with `qwen/qwen3-coder-30b` on "Seboreik dermatit için
+hangi tedaviler öneriliyor?":
+- First prompt: 2 of 4 claims held. One claim listed corticosteroids, antifungals and an
+  invented drug ("serefol"), cited to a passage that only mentions a moisturizer.
+- With "every claim must be stated in the note you cite; if not, leave it out" added: the
+  invented drug went away, 1 claim was exact and 2 were half-supported.
+- The remaining gap is mostly **retrieval, not generation.** Each note contributes one
+  passage, and it is the passage most *like* the question, not the one with the treatment
+  list. "Eklenti sözleşmesi neden 1.0'da donduruldu?" retrieved note templates and XR notes
+  instead of the architecture doc (entry 38's LaBSE finding again), and a faithful answer
+  over the wrong passages is still the wrong answer.
+- So answer mode stays off by default, and an answer with no citation is marked
+  "No sources cited — treat with care".
+
+**The bus.**
+- `accepts: text/plain` turns a routed paragraph into a search (use case 3, capped at 2,000
+  characters). The handler claims content only while a panel listens, ai-provider's rule
+  from entry 36; otherwise it declines, and the host opens the panel with the payload.
+- `emits: text/markdown` backs *Send*: the answer with `[[wikilinks]]` in place of the
+  numbers, plus a Sources list, or the hits alone.
+- A routed paragraph is never saved as `lastQuery`. It may be another note's text, and
+  `ctx.storage` holds `lastQuery`, `scope` and `answerMode` only (PRD §11.6).
+
+**Verified:**
+- 10 new daemon tests (86 total) and 13 new plugin tests (171 total), including the
+  disposal test at 5 disposables.
+- The answer path was run outside the app through a script bundled from the plugin's own
+  `answer.ts`: LM Studio (glm-4.7-flash, qwen3-coder-30b) and the daemon fallback.
+- **Not yet verified in the running app:** the toggle, citation buttons, *Send*, and a
+  paragraph routed from another panel.
+
+**Contract impact:** none.

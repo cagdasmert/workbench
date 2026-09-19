@@ -72,6 +72,12 @@ export interface EmbedJob {
   result?: { folders: FolderResult[] } | null;
 }
 
+/** A `text` job: answer mode's fallback when LM Studio is not there. */
+export interface TextJob extends Omit<EmbedJob, 'params' | 'result'> {
+  params: { model?: string; max_tokens?: number };
+  result?: { text: string; model: string } | null;
+}
+
 export const DEFAULT_DAEMON_URL = 'http://127.0.0.1:8077';
 
 /** The words every "can't reach it" message needs. Two lines: it is shown in a narrow box. */
@@ -144,6 +150,13 @@ export class VaultClient {
   search(req: { query: string; limit?: number; folders?: string[] }): Promise<SearchResult> {
     return this.request('POST', '/v1/search', req, 60_000);
   }
+
+  /** text.py over a catalog model, as a job: loading a model is seconds to minutes. */
+  generateText(req: { messages: Array<{ role: string; content: string }>; model: string; max_tokens: number }): Promise<TextJob> {
+    return this.request('POST', '/v1/generate/text', req);
+  }
+
+  textJob(id: string): Promise<TextJob> { return this.request('GET', `/v1/jobs/${encodeURIComponent(id)}`); }
 
   job(id: string): Promise<EmbedJob> { return this.request('GET', `/v1/jobs/${encodeURIComponent(id)}`); }
   jobs(): Promise<{ jobs: EmbedJob[] }> { return this.request('GET', '/v1/jobs'); }

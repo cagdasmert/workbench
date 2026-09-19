@@ -75,6 +75,12 @@
         }
       }
     ],
+    "accepts": [
+      "text/plain"
+    ],
+    "emits": [
+      "text/markdown"
+    ],
     "settings": {
       "daemonUrl": {
         "type": "string",
@@ -100,6 +106,21 @@
         "type": "boolean",
         "default": true,
         "description": "When the panel opens, re-index folders whose files changed. Off: only show how stale they are."
+      },
+      "answerUrl": {
+        "type": "string",
+        "default": "http://localhost:1234/v1",
+        "description": "OpenAI-compatible endpoint answer mode asks first (LM Studio). Only localhost:1234 and 127.0.0.1:1234 are reachable without a plugin.json change."
+      },
+      "answerModel": {
+        "type": "string",
+        "default": "",
+        "description": "Model to ask at answerUrl. Empty: whichever model LM Studio has loaded."
+      },
+      "fallbackModel": {
+        "type": "string",
+        "default": "mlx-community/Qwen3-0.6B-4bit",
+        "description": "Catalog model modelctld answers with when LM Studio is not running or has nothing loaded. Must be downloaded; larger answers better."
       }
     },
     "keybindings": [
@@ -111,6 +132,8 @@
   },
   "permissions": [
     "net:fetch:127.0.0.1:8077",
-    "net:fetch:localhost:8077"
+    "net:fetch:localhost:8077",
+    "net:fetch:localhost:1234",
+    "net:fetch:127.0.0.1:1234"
   ]
 }

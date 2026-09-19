@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { PanelContext, Plugin } from '@workbench/plugin-sdk';
+import type { Content, PanelContext, Plugin } from '@workbench/plugin-sdk';
 import { definePanel } from '@workbench/plugin-sdk/react';
 import {
   DEFAULT_DAEMON_URL,
@@ -12,6 +12,8 @@ import {
   type Hit,
   type SearchResult,
 } from './client.js';
+import { MAX_PASSAGES, answerMarkdown, buildMessages, hitsMarkdown, parseAnswer, type AnswerPart } from './answer.js';
+import { AnswerError, answerWith, type Answer, type AnswerSettings } from './llm.js';
 import { startPoller } from './poller.js';
 import { staleness, type Staleness, type Tone } from './staleness.js';
 import { excerpt, highlight, progressOf, wikilink } from './text.js';
@@ -22,10 +24,17 @@ const DEFAULT_MODEL = 'sentence-transformers/LaBSE';
 const DEFAULT_CHUNK_SIZE = 512;
 /** After this long, "Searching…" becomes "Loading the model…" — the cold worker is the only slow case. */
 const SLOW_MS = 1_500;
+/** A paragraph routed in over the bus becomes the query (use case 3); LaBSE reads ~256 tokens of it anyway. */
+const MAX_ROUTED_CHARS = 2_000;
+const DEFAULT_ANSWER: AnswerSettings = {
+  answerUrl: 'http://localhost:1234/v1',
+  answerModel: '',
+  fallbackModel: 'mlx-community/Qwen3-0.6B-4bit',
+};
 
 /** What a command asks of the panel. Plain data: it crosses the mailbox, not a callback. */
 type Request =
-  | { kind: 'search'; query: string; limit: number }
+  | { kind: 'search'; query: string; limit: number; answer?: true; routed?: true }
   | { kind: 'reindex'; full: boolean };
 
 /**
@@ -38,6 +47,8 @@ function mailbox<T>() {
   let listener: ((v: T) => void) | undefined;
   return {
     get pending(): T | undefined { return pending; },
+    /** Whether a mounted panel is receiving — the bus handler claims content only then. */
+    get listening(): boolean { return listener !== undefined; },
     /** On deactivate: a request nobody drained must not surface in the next activation. */
     clear(): void { pending = undefined; },
     send(v: T): void {
@@ -89,6 +100,10 @@ function VaultPanel({ ctx }: { ctx: PanelContext }) {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [showFolders, setShowFolders] = useState(false);
   const [confirm, setConfirm] = useState<Confirm | null>(null);
+  const [answerMode, setAnswerMode] = useState(false);
+  const [answerSettings, setAnswerSettings] = useState<AnswerSettings>(DEFAULT_ANSWER);
+  const [answer, setAnswer] = useState<AnswerView>({ kind: 'idle' });
+  const cardEls = useRef(new Map<number, HTMLDivElement>());
 
   const client = useMemo(() => new VaultClient(ctx.plugin, daemonUrl, token), [ctx, daemonUrl, token]);
   const settings = useMemo(() => ({ model: embedModel, chunkSize }), [embedModel, chunkSize]);
@@ -96,7 +111,7 @@ function VaultPanel({ ctx }: { ctx: PanelContext }) {
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const [u, t, m, c, auto, last, savedScope] = await Promise.all([
+      const [u, t, m, c, auto, last, savedScope, mode, aUrl, aModel, fModel] = await Promise.all([
         ctx.plugin.settings.get('daemonUrl'),
         ctx.plugin.settings.get('token'),
         ctx.plugin.settings.get('embedModel'),
@@ -104,6 +119,10 @@ function VaultPanel({ ctx }: { ctx: PanelContext }) {
         ctx.plugin.settings.get('autoRefresh'),
         ctx.plugin.storage.get('lastQuery'),
         ctx.plugin.storage.get('scope'),
+        ctx.plugin.storage.get('answerMode'),
+        ctx.plugin.settings.get('answerUrl'),
+        ctx.plugin.settings.get('answerModel'),
+        ctx.plugin.settings.get('fallbackModel'),
       ]);
       if (cancelled) return;
       if (typeof u === 'string' && u !== '') setDaemonUrl(u);
@@ -113,6 +132,12 @@ function VaultPanel({ ctx }: { ctx: PanelContext }) {
       if (typeof auto === 'boolean') setAutoRefresh(auto);
       if (typeof last === 'string') setQuery(last);
       if (Array.isArray(savedScope)) setScope(savedScope.filter((x): x is string => typeof x === 'string'));
+      if (typeof mode === 'boolean') setAnswerMode(mode);
+      setAnswerSettings({
+        answerUrl: typeof aUrl === 'string' && aUrl !== '' ? aUrl : DEFAULT_ANSWER.answerUrl,
+        answerModel: typeof aModel === 'string' ? aModel : DEFAULT_ANSWER.answerModel,
+        fallbackModel: typeof fModel === 'string' && fModel !== '' ? fModel : DEFAULT_ANSWER.fallbackModel,
+      });
       setLoaded(true);
     })();
     return () => { cancelled = true; };
@@ -126,6 +151,9 @@ function VaultPanel({ ctx }: { ctx: PanelContext }) {
       if (key === 'embedModel' && typeof value === 'string' && value !== '') setEmbedModel(value);
       if (key === 'chunkSize' && typeof value === 'number' && value > 0) setChunkSize(value);
       if (key === 'autoRefresh' && typeof value === 'boolean') setAutoRefresh(value);
+      if (key === 'answerUrl' && typeof value === 'string' && value !== '') setAnswerSettings((a) => ({ ...a, answerUrl: value }));
+      if (key === 'answerModel' && typeof value === 'string') setAnswerSettings((a) => ({ ...a, answerModel: value }));
+      if (key === 'fallbackModel' && typeof value === 'string' && value !== '') setAnswerSettings((a) => ({ ...a, fallbackModel: value }));
     });
     return () => { void sub.dispose(); };
   }, [ctx]);
@@ -133,6 +161,10 @@ function VaultPanel({ ctx }: { ctx: PanelContext }) {
   useEffect(() => {
     if (loaded) void ctx.plugin.storage.set('scope', scope);
   }, [ctx, loaded, scope]);
+
+  useEffect(() => {
+    if (loaded) void ctx.plugin.storage.set('answerMode', answerMode);
+  }, [ctx, loaded, answerMode]);
 
   const fail = useCallback((err: unknown) => {
     const e = asDaemonError(err);
@@ -304,7 +336,26 @@ function VaultPanel({ ctx }: { ctx: PanelContext }) {
   // ─── search ────────────────────────────────────────────────
 
   const searchSeq = useRef(0);
-  const run = useCallback(async (q: string, limit = DEFAULT_LIMIT) => {
+
+  /** PRD §4 answer mode: the top passages to a local LLM, the answer above the cards. */
+  const ask = useCallback(async (seq: number, q: string, hits: Hit[]) => {
+    const isCurrent = () => seq === searchSeq.current;
+    setAnswer({ kind: 'working', stage: 'Preparing…' });
+    try {
+      const got = await answerWith(ctx.plugin, client, answerSettings, buildMessages(q, hits),
+        (stage) => { if (isCurrent()) setAnswer({ kind: 'working', stage }); }, isCurrent);
+      if (got !== null && isCurrent()) {
+        setAnswer({ kind: 'done', answer: got, parts: parseAnswer(got.text, Math.min(hits.length, MAX_PASSAGES)) });
+      }
+    } catch (err: unknown) {
+      if (!isCurrent()) return;
+      const e = err instanceof AnswerError ? err : new AnswerError(String(err));
+      setAnswer({ kind: 'error', message: e.message, ...(e.hint === undefined ? {} : { hint: e.hint }) });
+    }
+  }, [ctx, client, answerSettings]);
+
+  /** `remember: false` for text routed in: it may be another note's content, and storage never holds that (PRD §11.6). */
+  const run = useCallback(async (q: string, limit = DEFAULT_LIMIT, withAnswer = answerMode, remember = true) => {
     const trimmed = q.trim();
     if (trimmed === '') return;
     const seq = ++searchSeq.current;
@@ -312,18 +363,24 @@ function VaultPanel({ ctx }: { ctx: PanelContext }) {
     setSearching(true);
     setSlow(false);
     setExpanded(null);
+    setAnswer({ kind: 'idle' });
     const slowTimer = setTimeout(() => { if (seq === searchSeq.current) setSlow(true); }, SLOW_MS);
-    void ctx.plugin.storage.set('lastQuery', trimmed);
+    if (remember) void ctx.plugin.storage.set('lastQuery', trimmed);
     try {
       const res = await client.search({ query: trimmed, limit, ...(scope.length > 0 ? { folders: scope } : {}) });
-      if (seq === searchSeq.current) setResult({ query: trimmed, res });
+      if (seq !== searchSeq.current) return;
+      setResult({ query: trimmed, res });
+      clearTimeout(slowTimer);
+      setSearching(false);
+      // Retrieval shows first; the answer arrives above it when it is ready.
+      if (withAnswer && res.hits.length > 0) void ask(seq, trimmed, res.hits);
     } catch (err: unknown) {
       if (seq === searchSeq.current) fail(err);
     } finally {
       clearTimeout(slowTimer);
       if (seq === searchSeq.current) setSearching(false);
     }
-  }, [ctx, client, scope, fail]);
+  }, [ctx, client, scope, fail, answerMode, ask]);
 
   // Commands, once the daemon is reachable and the folders are known. The
   // handler lives in a ref so a changed client does not drop a queued request.
@@ -334,7 +391,8 @@ function VaultPanel({ ctx }: { ctx: PanelContext }) {
       return;
     }
     setQuery(req.query);
-    void run(req.query, req.limit);
+    if (req.answer === true) setAnswerMode(true);
+    void run(req.query, req.limit, req.answer === true || answerMode, req.routed !== true);
   };
 
   const ready = connected && folders !== null;
@@ -342,6 +400,35 @@ function VaultPanel({ ctx }: { ctx: PanelContext }) {
     if (!ready) return undefined;
     return requests.receive((req) => onRequest.current(req));
   }, [ready]);
+
+  // Content routed here (use case 3: a paragraph from another panel) arrives
+  // as ctx.payload when the bus handler declined it — no panel was listening.
+  const payloadHandled = useRef(false);
+  useEffect(() => {
+    if (!ready || payloadHandled.current || ctx.payload === undefined) return;
+    payloadHandled.current = true;
+    const data = (ctx.payload as Content).data;
+    if (typeof data === 'string' && data.trim() !== '') {
+      const q = data.trim().slice(0, MAX_ROUTED_CHARS);
+      setQuery(q);
+      void run(q, DEFAULT_LIMIT, answerMode, false);
+    }
+  }, [ctx, ready, run, answerMode]);
+
+  const send = useCallback(async () => {
+    if (result === null) return;
+    const md = answer.kind === 'done'
+      ? answerMarkdown(result.query, answer.answer.text, result.res.hits)
+      : hitsMarkdown(result.query, result.res.hits);
+    await ctx.plugin.bus.emit({ type: 'text/markdown', data: md, meta: { filename: 'vault-search.md', query: result.query } });
+  }, [ctx, result, answer]);
+
+  const showCite = useCallback((n: number) => {
+    const hit = result?.res.hits[n - 1];
+    if (hit === undefined) return;
+    setExpanded(`${hit.folder}/${hit.rel_path}`);
+    cardEls.current.get(n)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }, [result]);
 
   const copyLink = useCallback(async (hit: Hit) => {
     try {
@@ -406,6 +493,10 @@ function VaultPanel({ ctx }: { ctx: PanelContext }) {
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                 />
+                <label style={S.toggle} title="Send the top passages to a local model and answer above the results">
+                  <input type="checkbox" checked={answerMode} onChange={(e) => setAnswerMode(e.target.checked)} />
+                  Answer
+                </label>
                 <button
                   type="submit"
                   style={{ ...S.primary, ...(query.trim() === '' || searching ? S.disabled : {}) }}
@@ -476,17 +567,28 @@ function VaultPanel({ ctx }: { ctx: PanelContext }) {
 
               {!searching && result !== null && (
                 <>
-                  <p style={S.mutedSmall}>
-                    {result.res.hits.length === 0
-                      ? 'No notes matched.'
-                      : `${result.res.hits.length} notes · ${result.res.took_ms} ms`}
-                  </p>
+                  <AnswerBox view={answer} onCite={showCite} />
+                  <div style={S.resultsHead}>
+                    <span style={S.mutedSmallInline}>
+                      {result.res.hits.length === 0
+                        ? 'No notes matched.'
+                        : `${result.res.hits.length} notes · ${result.res.took_ms} ms`}
+                    </span>
+                    {result.res.hits.length > 0 && (
+                      <button type="button" style={S.linkButton} onClick={() => void send()}
+                        title="Send as markdown to a plugin that accepts it">
+                        Send
+                      </button>
+                    )}
+                  </div>
                   <div style={S.cards}>
-                    {result.res.hits.map((hit) => {
+                    {result.res.hits.map((hit, i) => {
                       const key = `${hit.folder}/${hit.rel_path}`;
                       return (
                         <Card
                           key={key}
+                          n={i + 1}
+                          cardRef={(el) => { if (el === null) cardEls.current.delete(i + 1); else cardEls.current.set(i + 1, el); }}
                           hit={hit}
                           query={result.query}
                           expanded={expanded === key}
@@ -622,6 +724,40 @@ function Indexing({ job, queued, onCancel }: { job: EmbedJob; queued: number; on
   );
 }
 
+type AnswerView =
+  | { kind: 'idle' }
+  | { kind: 'working'; stage: string }
+  | { kind: 'done'; answer: Answer; parts: AnswerPart[] }
+  | { kind: 'error'; message: string; hint?: string };
+
+function AnswerBox({ view, onCite }: { view: AnswerView; onCite: (n: number) => void }) {
+  if (view.kind === 'idle') return null;
+  if (view.kind === 'working') return <div style={S.answer}><span style={S.mutedSmallInline}>{view.stage}</span></div>;
+  if (view.kind === 'error') {
+    return (
+      <div style={S.answer}>
+        <span style={S.answerError}>No answer: {view.message}</span>
+        {view.hint !== undefined && <div style={S.mutedSmall}>{view.hint}</div>}
+      </div>
+    );
+  }
+  const { answer, parts } = view;
+  const cited = parts.some((p) => 'cite' in p);
+  return (
+    <div style={S.answer}>
+      <div style={S.answerText}>
+        {parts.map((p, i) => ('cite' in p
+          ? <button key={i} type="button" style={S.cite} onClick={() => onCite(p.cite)}>{p.cite}</button>
+          : <span key={i}>{p.text}</span>))}
+      </div>
+      <div style={S.answerFoot}>
+        {!cited && <span style={S.answerWarn}>No sources cited — treat with care. </span>}
+        via {answer.backend === 'lmstudio' ? 'LM Studio' : 'modelctld'} · {answer.model}
+      </div>
+    </div>
+  );
+}
+
 function Marked({ text, query }: { text: string; query: string }) {
   return (
     <>
@@ -632,7 +768,9 @@ function Marked({ text, query }: { text: string; query: string }) {
   );
 }
 
-function Card({ hit, query, expanded, onToggle, onCopy }: {
+function Card({ n, cardRef, hit, query, expanded, onToggle, onCopy }: {
+  n: number;
+  cardRef: (el: HTMLDivElement | null) => void;
   hit: Hit;
   query: string;
   expanded: boolean;
@@ -643,6 +781,7 @@ function Card({ hit, query, expanded, onToggle, onCopy }: {
   const section = hit.heading.startsWith(`${hit.title} › `) ? hit.heading.slice(hit.title.length + 3) : '';
   return (
     <div
+      ref={cardRef}
       style={S.hit}
       role="button"
       tabIndex={0}
@@ -650,6 +789,7 @@ function Card({ hit, query, expanded, onToggle, onCopy }: {
       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggle(); } }}
     >
       <div style={S.hitHead}>
+        <span style={S.num}>{n}</span>
         <span style={S.hitTitle}>{hit.title}</span>
         <span style={S.tag}>{hit.folder}</span>
         <span style={S.score} title="cosine similarity">{hit.score.toFixed(2)}</span>
@@ -806,6 +946,40 @@ const S: Record<string, React.CSSProperties> = {
   passageFull: { margin: '6px 0', whiteSpace: 'pre-wrap', userSelect: 'text', cursor: 'text' },
   mark: { background: 'var(--highlight-bg, #fde68a)', color: 'inherit', borderRadius: 2, padding: '0 1px' },
   hitFoot: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
+  toggle: { display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, whiteSpace: 'nowrap', cursor: 'pointer' },
+  answer: {
+    padding: '10px 12px',
+    marginBottom: 12,
+    borderRadius: 8,
+    border: '1px solid #93c5fd',
+    background: 'var(--answer-bg, rgba(37, 99, 235, 0.06))',
+  },
+  answerText: { whiteSpace: 'pre-wrap', userSelect: 'text', lineHeight: 1.6 },
+  answerFoot: { marginTop: 6, fontSize: 11, color: 'var(--chrome-muted, #71717a)' },
+  answerWarn: { color: 'var(--warn-fg, #d97706)' },
+  answerError: { color: 'var(--error-fg, #b91c1c)' },
+  cite: {
+    font: '10px ui-monospace, SFMono-Regular, Menlo, monospace',
+    verticalAlign: 'super',
+    padding: '0 4px',
+    margin: '0 1px',
+    borderRadius: 3,
+    border: '1px solid #93c5fd',
+    background: 'transparent',
+    color: '#2563eb',
+    cursor: 'pointer',
+  },
+  num: {
+    flex: '0 0 auto',
+    font: '10px ui-monospace, SFMono-Regular, Menlo, monospace',
+    minWidth: 16,
+    textAlign: 'center',
+    padding: '0 3px',
+    borderRadius: 3,
+    border: '1px solid var(--chrome-border, #d4d4d8)',
+    color: 'var(--chrome-muted, #71717a)',
+  },
+  resultsHead: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '0 0 8px' },
   scopeRow: {
     display: 'flex',
     flexWrap: 'wrap',
@@ -880,13 +1054,26 @@ export const plugin: Plugin = {
     ctx.registerCommand('vault.search', async (...args: unknown[]) => {
       const query = typeof args[0] === 'string' ? args[0].trim() : '';
       await ctx.workspace.openPanel(PANEL_ID);
-      if (query !== '') requests.send({ kind: 'search', query, limit: clampLimit(args[1]) });
+      if (query !== '') {
+        requests.send({ kind: 'search', query, limit: clampLimit(args[1]), ...(args[2] === true ? { answer: true } : {}) });
+      }
     });
 
     // Positional: full. Changed files only unless asked; a full re-index is confirmed in the panel.
     ctx.registerCommand('vault.reindex', async (...args: unknown[]) => {
       await ctx.workspace.openPanel(PANEL_ID);
       requests.send({ kind: 'reindex', full: args[0] === true });
+    });
+
+    // Use case 3: a paragraph from another panel → the notes it should cite.
+    ctx.bus.onReceive((content) => {
+      if (typeof content.data !== 'string' || content.data.trim() === '') return undefined;
+      // The shell mounts one panel at a time, so while the sender's panel is
+      // showing nobody listens here. Claiming the content then would drop it:
+      // `handled` stops the host before it opens this panel (change log 36).
+      if (!requests.listening) return undefined;
+      requests.send({ kind: 'search', query: content.data.trim().slice(0, MAX_ROUTED_CHARS), limit: DEFAULT_LIMIT, routed: true });
+      return { handled: true };
     });
   },
 
