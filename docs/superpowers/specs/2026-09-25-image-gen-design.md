@@ -81,7 +81,9 @@ The daemon moved into the repo as this branch's first commit (`6308694`); see
 8. **One image job at a time, across all models.** A second `image` job of any mode or model
    gets a 409 whose hint names the running job's id. The one-job-per-repo rule still applies on
    top, so an image job also cannot start while its model is being pulled or moved. Queueing is
-   deferred, as it was in transcribe.
+   deferred, as it was in transcribe. The conflict check and the job's registration happen under
+   one lock (`JobStore.claim`). That closes the gap the existing `running_for`-then-`add` pair
+   left, where two requests arriving together could both pass.
 9. **`out_dir`** comes from the plugin's `outputDir` setting. When the setting is empty, the
    daemon writes to `~/Pictures/Workbench` and creates the folder. An explicit `out_dir` must be
    an existing absolute directory, otherwise it is a 400, so a typo in settings cannot create a
@@ -95,10 +97,13 @@ The daemon moved into the repo as this branch's first commit (`6308694`); see
     it.
 12. **`strength` is dropped** from the edit route. Qwen-Image-Edit edits by instruction; it is
     not img2img.
-13. **`upscaleModel` is a new setting.** Its default is settled in M1, once it is known which
-    Hugging Face repo mflux loads for `seedvr2-3b` and whether `resolve()` can serve it. The
-    factor is 2 or 3, as mflux documents `2x` and `3x`. The range widens only if M1 shows mflux
-    accepts more.
+13. **Upscaling is SeedVR2 3B from `numz/SeedVR2_comfyUI`, the repo mflux itself loads.** It
+    is the default of the new `upscaleModel` setting. The repo holds 60 GB of variants, and mflux
+    reads two of its files (7.3 GB), so it is pulled with `--include
+    seedvr2_ema_3b_fp16.safetensors ema_vae_fp16.safetensors`. `POST /v1/catalog/pull` has no
+    `include`, so when the model is missing, the 404 hint gives the `modelctl` command instead of
+    a POST. The factor is 2 or 3. mflux parses any positive factor, but only `2x` and `3x` are
+    documented. The upscaled long edge is capped at 4096 px, and a larger result is a 400.
 14. **The ids change to the `imagegen.*` prefix.** The commands are `imagegen.open`,
     `imagegen.generate`, `imagegen.edit` and `imagegen.upscale`; the panel is `imagegen.main`;
     the keybinding is `cmd+shift+g`, which is free. Every command has a complete `args` block
@@ -137,6 +142,20 @@ The daemon moved into the repo as this branch's first commit (`6308694`); see
 22. **`poller.ts` is copied a third time.** The copies in transcribe and vault-search are
     byte-identical. Extracting all three is a follow-up, so this branch does not change the
     build of two plugins that have already shipped.
+23. **Size limits.**
+    - **Generate:** width and height are 256–2048 and multiples of 16, defaulting to the
+      family's size.
+    - **Edit:** the output keeps the source's aspect ratio at no more than one megapixel, with
+      both sides multiples of 16. A 12 MP phone photo edited at full size would not fit in
+      memory, and these models work at about 1 MP anyway.
+    - **Steps:** 1–100. A value of 0 means "use the default", as the plugin's command args
+      define it; the same holds for seed 0, which means "random".
+24. **`image.py` runs mflux the way mflux's own command-line tools do.** It registers mflux's
+    `MemorySaver`, which evicts the text encoders once the prompt is encoded (8–12 GB by mflux's
+    own measurement), and leaves `quantize` unset so pre-quantized weights load as they are
+    stored. `HF_HUB_OFFLINE=1` makes any download mflux attempts fail rather than bypass
+    modelctl. `TQDM_DISABLE=1` removes mflux's progress bars, so the `%` lines in the log are
+    only `image.py`'s own. mflux is pinned to `0.20.0`.
 
 ## Wire contract
 
@@ -155,7 +174,7 @@ POST /v1/generate/image/upscale   { path, factor? = 2, model?, out_dir? }
      seed 0 or absent = random; the seed actually used is always in the result.
      400 bad field, source not an absolute PNG/JPEG/WebP file, out_dir not an existing absolute
          directory, out_dir under the Workbench plugin directory
-     404 model not downloaded (hint: pull)
+     404 model not downloaded (hint: the modelctl pull command, with --include for SeedVR2)
      409 ★ another image job is running (hint: its id) · model busy (pull/mv/rm)
 
 GET  /v1/jobs/<id>
@@ -196,7 +215,7 @@ plugins/image-gen/
 
 | | Builds | Gate |
 |---|---|---|
-| **M1 wire** | Install mflux and pull Z-Image q8. `image.py` (FAMILIES, generate, edit, upscale), the six routes, the one-image-job rule. Settle the SeedVR2 repo and `upscaleModel`. | `curl`: generating with no `steps` runs 9 steps; the same seed twice gives pixel-identical output; `load_s`, `gen_s` and `peak_gb` are reported; a second concurrent job gets a 409; one upscale succeeds. |
+| **M1 wire** | Install mflux 0.20.0. Pull Z-Image q8 and SeedVR2 3B (two files). `image.py` (FAMILIES, generate, edit, upscale), the six routes, the one-image-job rule. | `curl`: generating with no `steps` runs 9 steps; the same seed twice gives pixel-identical output; `load_s`, `gen_s` and `peak_gb` are reported; a second concurrent job gets a 409; one upscale succeeds. |
 | **Spike: facade** | No code. Pull Qwen-Edit q6 and Klein 9B q8, then run one instruction on a real photo of the front wall through each. | The user compares the two before/after pairs, with time and peak memory, and picks `editModel`. **If neither is usable, stop** and rethink use case 1 before any Edit UI is built. |
 | **M2 generate** | Plugin: client, form, poller, Generate mode, result view, persisted history strip, re-attach, disposal test. | Generate from the app. Close the panel mid-run and reopen it: the job re-attaches. Restart the app: the tile is still there. |
 | **M3 edit and upscale** | Both modes, *Pick…*, before/after, *Use as edit source*. | The facade before/after, run from the app (criterion 4). |
