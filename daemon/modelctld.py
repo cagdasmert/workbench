@@ -154,15 +154,18 @@ class JobStore:
 
     def add(self, job: Job) -> None:
         with self._lock:
-            self._jobs[job.id] = job
-            self._order.append(job.id)
-            # Keep the list bounded, but never evict something still running.
-            while len(self._order) > JOB_RETENTION:
-                oldest = self._order[0]
-                if self._jobs[oldest].state == "running":
-                    break
-                self._order.popleft()
-                self._jobs.pop(oldest, None)
+            self._add_locked(job)
+
+    def _add_locked(self, job: Job) -> None:
+        self._jobs[job.id] = job
+        self._order.append(job.id)
+        # Keep the list bounded, but never evict something still running.
+        while len(self._order) > JOB_RETENTION:
+            oldest = self._order[0]
+            if self._jobs[oldest].state == "running":
+                break
+            self._order.popleft()
+            self._jobs.pop(oldest, None)
 
     def get(self, job_id: str) -> Job:
         with self._lock:
@@ -175,12 +178,21 @@ class JobStore:
         with self._lock:
             return [self._jobs[i] for i in reversed(self._order)]
 
-    def running_for(self, repo: str) -> Job | None:
+    def claim(self, job: Job, *, exclusive_kind: bool = False) -> Job | None:
+        """Add `job` unless a running job conflicts with it, and return that job instead.
+
+        A job conflicts when it has the same repo, or, with `exclusive_kind`, the
+        same kind. The check and the add share one lock hold, so two requests
+        arriving together cannot both pass the check.
+        """
         with self._lock:
             for i in self._order:
-                j = self._jobs[i]
-                if j.repo == repo and j.state == "running":
-                    return j
+                other = self._jobs[i]
+                if other.state != "running":
+                    continue
+                if other.repo == job.repo or (exclusive_kind and other.kind == job.kind):
+                    return other
+            self._add_locked(job)
         return None
 
 
@@ -188,7 +200,8 @@ JOBS = JobStore()
 
 
 def start_job(kind: str, repo: str, args: list[str], *, script: str = MODELCTL_PY,
-              params: dict | None = None, result_path: Path | None = None) -> Job:
+              params: dict | None = None, result_path: Path | None = None,
+              exclusive_kind: bool = False) -> Job:
     """Run `<script> <args>` in the background, streaming output into a Job.
 
     One job per repo at a time: two concurrent pulls of the same model into
@@ -200,19 +213,27 @@ def start_job(kind: str, repo: str, args: list[str], *, script: str = MODELCTL_P
     `result_path`, when given, is a file the script writes its structured
     result to. It is loaded into `job.result` on exit 0 and always deleted:
     a transcript is too big, and too structured, to scrape out of the log.
-    """
-    existing = JOBS.running_for(repo)
-    if existing is not None:
-        raise ApiError(
-            f"{repo} already has a running {existing.kind} job",
-            status=409,
-            hint=f"poll /v1/jobs/{existing.id}, or cancel it first",
-        )
 
+    `exclusive_kind` also refuses the job while any job of the same kind runs,
+    whatever its repo. Image generation needs this: two different image models
+    resident together swap on 48 GB, which the per-repo rule alone allows.
+    """
     argv = [sys.executable, script, *args]
     job = Job(kind, repo, argv)
     job.params = params or {}
-    JOBS.add(job)
+    existing = JOBS.claim(job, exclusive_kind=exclusive_kind)
+    if existing is not None:
+        if existing.repo == repo:
+            raise ApiError(
+                f"{repo} already has a running {existing.kind} job",
+                status=409,
+                hint=f"poll /v1/jobs/{existing.id}, or cancel it first",
+            )
+        raise ApiError(
+            f"another {kind} job is running ({existing.repo})",
+            status=409,
+            hint=f"one {kind} job at a time -- poll /v1/jobs/{existing.id}, or cancel it first",
+        )
 
     def run() -> None:
         env = {**os.environ, "PYTHONUNBUFFERED": "1"}
