@@ -115,3 +115,113 @@ def pull_command(repo: str) -> str:
         if family.include and _matches(family, repo):
             return f"modelctl pull {repo} --include {' '.join(family.include)}"
     return f"modelctl pull {repo}"
+
+
+# ---------------------------------------------------------------------------
+# output files
+# ---------------------------------------------------------------------------
+
+DEFAULT_OUT_DIR = Path.home() / "Pictures" / "Workbench"
+PREVIEW_EDGE = 512
+
+# Workbench loads plugins from here at launch, so a file written into it is code
+# that runs on the next start with no prompt (workbench CLAUDE.md, "Watch for").
+# The fs broker deny-lists it; the daemon's writes do too.
+DENIED_WRITE_ROOTS: tuple[Path, ...] = (
+    Path.home() / "Library" / "Application Support" / "Workbench" / "plugins",
+)
+
+
+def write_denied(directory: Path) -> str | None:
+    """Why `directory` must not be written to, or None.
+
+    Both sides are resolved first, so a symlink that leads into the plugin
+    folder is caught as well as the folder itself.
+    """
+    real = directory.resolve()
+    for root in DENIED_WRITE_ROOTS:
+        denied = root.resolve()
+        if real == denied or real.is_relative_to(denied):
+            return f"{directory} is inside Workbench's plugin folder, which is never written to"
+    return None
+
+
+def resolve_out_dir(raw: object) -> Path:
+    """Where results go: `raw` when it is an existing absolute folder, else the default.
+
+    The default is created on first use. An explicit folder must already exist,
+    so a typo in the panel's settings cannot scatter new folders around the disk.
+    """
+    if raw is None or raw == "":
+        DEFAULT_OUT_DIR.mkdir(parents=True, exist_ok=True)
+        return DEFAULT_OUT_DIR
+    if not isinstance(raw, str):
+        raise ImageError(f"out_dir must be a folder path, got {raw!r}")
+    folder = Path(raw).expanduser()
+    if not folder.is_absolute() or not folder.is_dir():
+        raise ImageError(f"out_dir must be an existing absolute folder, got {raw!r}")
+    problem = write_denied(folder)
+    if problem:
+        raise ImageError(problem)
+    return folder
+
+
+def output_name(mode: str, seed: int, when: datetime) -> str:
+    return f"{when:%Y%m%d-%H%M%S}_{mode}_{seed}.png"
+
+
+def open_new(directory: Path, filename: str) -> tuple[Path, BinaryIO]:
+    """Create `filename` in `directory` for writing, never over an existing entry.
+
+    A taken name gets -2, -3, ... before the extension. Exclusive create is also
+    what refuses a symlink planted at the name: O_EXCL fails on any existing
+    entry, a dangling link included, so a write cannot be redirected outside
+    `directory`. The broker's COPYFILE_EXCL rests on the same reasoning.
+    """
+    stem, suffix = Path(filename).stem, Path(filename).suffix
+    for n in range(1, 1000):
+        candidate = directory / (filename if n == 1 else f"{stem}-{n}{suffix}")
+        try:
+            return candidate, candidate.open("xb")
+        except FileExistsError:
+            continue
+    raise ImageError(f"{directory} already holds 999 files named like {filename}")
+
+
+def save_png(image: Any, directory: Path, filename: str, meta: dict[str, Any]) -> Path:
+    """Write `image` as PNG with `meta` in text chunks, plus a JSON sidecar of the same stem.
+
+    The sidecar is skipped rather than overwritten if its name is somehow taken.
+    The text chunks still carry everything in it.
+    """
+    from PIL.PngImagePlugin import PngInfo
+
+    info = PngInfo()
+    for key, value in meta.items():
+        info.add_text(key, str(value))
+    path, f = open_new(directory, filename)
+    with f:
+        image.save(f, format="PNG", pnginfo=info)
+    try:
+        with path.with_suffix(".json").open("x", encoding="utf-8") as side:
+            json.dump(meta, side, ensure_ascii=False, indent=2)
+    except FileExistsError:
+        pass
+    return path
+
+
+def copy_new(source: Path, directory: Path) -> Path:
+    """Copy `source` into `directory` under its own name, never overwriting."""
+    path, f = open_new(directory, source.name)
+    with f, source.open("rb") as src:
+        shutil.copyfileobj(src, f)
+    return path
+
+
+def preview_b64(image: Any, edge: int = PREVIEW_EDGE) -> str:
+    """A JPEG of at most `edge` px on the long side, as base64. C3: never the full PNG."""
+    small = image.convert("RGB")
+    small.thumbnail((edge, edge))
+    buf = io.BytesIO()
+    small.save(buf, format="JPEG", quality=82)
+    return base64.b64encode(buf.getvalue()).decode("ascii")
