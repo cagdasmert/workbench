@@ -30,10 +30,11 @@ Design notes
 * **`/v1/index/*` is the vault index.** embed.py is imported in-process for
   the store and change scan (stdlib only); embedding runs as an `embed` job,
   one per model, like a pull. The daemon never imports torch.
-* **`/v1/generate/*` is where runtime scripts mount.** `asr` and `text` are live: asr.py
-  is imported in-process to validate a request (cheap -- MLX loads only in the
-  subprocess), then run as a job like a pull. The rest answer 501 until their
-  scripts exist; the namespace was claimed early so clients never reshaped.
+* **`/v1/generate/*` is where runtime scripts mount.** `asr`, `text` and `image` are
+  live. Each script is imported in-process to validate a request (cheap -- MLX
+  loads only in the subprocess), then run as a job like a pull. `image` jobs run
+  one at a time, whatever the model. The rest answer 501 until their scripts
+  exist; the namespace was claimed early so clients never reshaped.
 
 Usage
 -----
@@ -64,6 +65,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import asr  # noqa: E402  -- cheap: validation and rendering only, MLX loads in the subprocess
 import text as textgen  # noqa: E402  -- cheap: validation only, mlx_lm loads in the subprocess
 import embed  # noqa: E402  -- cheap: chunker and store are stdlib; torch loads in the subprocess
+import image as imagegen  # noqa: E402  -- cheap: families and validation; mflux loads in the subprocess
 import modelctl as mc  # noqa: E402
 
 DEFAULT_PORT = 8077
@@ -73,6 +75,7 @@ MODELCTL_PY = str(Path(__file__).resolve().parent / "modelctl.py")
 ASR_PY = str(Path(__file__).resolve().parent / "asr.py")
 EMBED_PY = str(Path(__file__).resolve().parent / "embed.py")
 TEXT_PY = str(Path(__file__).resolve().parent / "text.py")
+IMAGE_PY = str(Path(__file__).resolve().parent / "image.py")
 
 VERSION = "1.0.0"
 
@@ -695,6 +698,52 @@ def h_text(body: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# generate/image -- validated in-process, run as an image.py subprocess
+# ---------------------------------------------------------------------------
+
+
+def _local_repos() -> list[str]:
+    """Every repo folder on a mounted root. Folder presence is what `ls` calls downloaded."""
+    repos: list[str] = []
+    for root in _cfg().roots.values():
+        if root.exists():
+            repos += [mc.repo_for(d.name) for d in sorted(root.iterdir())
+                      if d.name.startswith("models--") and d.is_dir()]
+    return repos
+
+
+def h_image_models() -> dict:
+    return {"models": imagegen.catalog(_local_repos())}
+
+
+def h_image(mode: str, body: dict) -> dict:
+    try:
+        req = imagegen.build_request(
+            mode, model=body.get("model"), out_dir=body.get("out_dir"),
+            prompt=body.get("prompt"), negative=body.get("negative"),
+            instruction=body.get("instruction"), source=body.get("path"),
+            factor=body.get("factor"), steps=body.get("steps"), seed=body.get("seed"),
+            width=body.get("width"), height=body.get("height"),
+        )
+    except imagegen.ImageError as e:
+        raise ApiError(str(e)) from None
+    if mc.resolve(req.model, cfg=_cfg()) is None:
+        raise ApiError(f"{req.model} is not downloaded", status=404,
+                       hint=imagegen.pull_command(req.model))
+
+    fd, out = tempfile.mkstemp(prefix="modelctld-image-", suffix=".json")
+    os.close(fd)
+    try:
+        job = start_job("image", req.model, [*imagegen.to_argv(req), f"--out={out}"],
+                        script=IMAGE_PY, params=imagegen.params_of(req),
+                        result_path=Path(out), exclusive_kind=True)
+    except ApiError:
+        Path(out).unlink(missing_ok=True)   # 409: nothing will ever read it
+        raise
+    return job.as_dict()
+
+
+# ---------------------------------------------------------------------------
 # index -- the vault index; reads in-process, embedding as an embed.py job
 # ---------------------------------------------------------------------------
 
@@ -1123,6 +1172,15 @@ class Handler(BaseHTTPRequestHandler):
             if method == "POST" and leaf == ["save"]:
                 return h_asr_save(body)
 
+        if rest[:2] == ["generate", "image"]:
+            leaf = rest[2:]
+            if method == "GET" and leaf == ["models"]:
+                return h_image_models()
+            if method == "POST" and leaf == []:
+                return h_image("generate", body)
+            if method == "POST" and leaf in (["edit"], ["upscale"]):
+                return h_image(leaf[0], body)
+
         if method == "POST" and rest == ["generate", "text"]:
             return h_text(body)
 
@@ -1130,7 +1188,7 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(
                 "no runtime is wired up for this /v1/generate route yet",
                 status=501,
-                hint=("asr and text are live; image_gen.py, tts and the rest mount under "
+                hint=("asr, text and image are live; tts and the rest mount under "
                       "/v1/generate/* as their scripts land"),
             )
 
@@ -1161,6 +1219,7 @@ def serve(host: str = "127.0.0.1", port: int = DEFAULT_PORT, token: str = "") ->
     print("  routes   /v1/health  /v1/catalog/{models,doctor,search,info,path}")
     print("           /v1/catalog/{pull,mv,rm} (POST)  /v1/jobs[/<id>]")
     print("           /v1/generate/asr (POST)  /v1/generate/asr/probe  /v1/generate/asr/save (POST)")
+    print("           /v1/generate/image[/edit|/upscale] (POST)  /v1/generate/image/models")
     print("           /v1/index/folders[/<name>] (GET, POST, DELETE)  /v1/index/folders/<name>/remove (POST)")
     print("           /v1/index/refresh (POST)")
     print("           /v1/search (POST)  /v1/embed (POST)")
