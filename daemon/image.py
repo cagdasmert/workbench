@@ -435,3 +435,170 @@ def request_from_args(args: argparse.Namespace) -> Request:
         factor=getattr(args, "factor", None), steps=getattr(args, "steps", None), seed=args.seed,
         width=getattr(args, "width", None), height=getattr(args, "height", None),
     )
+
+
+# ---------------------------------------------------------------------------
+# running -- mflux is imported only below this line, and only when called
+# ---------------------------------------------------------------------------
+
+
+class Progress:
+    """An mflux callback that prints the lines modelctld turns into a job's percent.
+
+    Nothing printed before the sampling loop contains '%', so percent stays null
+    exactly while the model loads. That is how the panel tells "Loading model..."
+    from "Generating" without a new job field. tqdm is switched off
+    (TQDM_DISABLE), so these are the only percentages in the log.
+    """
+
+    def __init__(self, out: Callable[[str], None]) -> None:
+        self.out = out
+        self.done = 0
+
+    def call_before_loop(self, **_: Any) -> None:
+        self.out("generating  0%")
+
+    def call_in_loop(self, *, time_steps: Any = None, **_: Any) -> None:
+        self.done += 1
+        total = getattr(time_steps, "total", None) or self.done
+        self.out(f"step {self.done}/{total}  {min(100, round(100 * self.done / total))}%")
+
+
+def load_model(family: Family, model_dir: Path) -> Any:
+    """The mflux model for `family`, from a local snapshot that modelctl resolved.
+
+    `quantize` is left unset, so pre-quantized weights (the mflux-community
+    repos) load at the bits they were saved with. MemorySaver is what mflux's
+    own CLI always registers: it evicts the text encoders once the prompt is
+    encoded, 8-12 GB by mflux's measurement.
+    """
+    os.environ["TQDM_DISABLE"] = "1"
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    from mflux.callbacks.instances.memory_saver import MemorySaver
+    from mflux.models.common.config.model_config import ModelConfig
+
+    path = str(model_dir)
+    model: Any
+    if family.name == "z-image-turbo":
+        from mflux.models.z_image.variants.z_image import ZImage
+        model = ZImage(model_path=path, model_config=ModelConfig.z_image_turbo())
+    elif family.name == "qwen-image-edit":
+        from mflux.models.qwen.variants.edit.qwen_image_edit import QwenImageEdit
+        model = QwenImageEdit(model_path=path, model_config=ModelConfig.qwen_image_edit())
+    elif family.name == "flux2-klein-9b":
+        from mflux.models.flux2.variants import Flux2KleinEdit
+        model = Flux2KleinEdit(model_path=path, model_config=ModelConfig.flux2_klein_9b())
+    elif family.name == "seedvr2":
+        from mflux.models.seedvr2.variants.upscale.seedvr2 import SeedVR2
+        model = SeedVR2(model_path=path, model_config=ModelConfig.seedvr2_3b())
+    else:
+        raise ImageError(f"image.py has no loader for {family.name}")
+    model.callbacks.register(MemorySaver(model=model, keep_transformer=True, cache_limit_bytes=None))
+    return model
+
+
+def _generate(family: Family, model: Any, req: Request, seed: int, steps: int | None,
+              size: tuple[int, int] | None) -> Any:
+    """One mflux call. Each family's generate_image takes different arguments."""
+    if family.role == "upscale":
+        from mflux.utils.scale_factor import ScaleFactor
+        return model.generate_image(seed=seed, image_path=str(req.source),
+                                    resolution=ScaleFactor(value=req.factor or 2), softness=0.0)
+    if size is None:
+        raise ImageError(f"no output size for a {family.role} request")
+    width, height = size
+    if family.role == "generate":
+        return model.generate_image(seed=seed, prompt=req.prompt, num_inference_steps=steps,
+                                    width=width, height=height, negative_prompt=req.negative)
+    sources = [str(req.source)]
+    if family.name == "qwen-image-edit":
+        return model.generate_image(seed=seed, prompt=req.instruction, image_paths=sources,
+                                    image_path=sources[0], num_inference_steps=steps,
+                                    width=width, height=height, guidance=family.guidance)
+    return model.generate_image(seed=seed, prompt=req.instruction, image_paths=sources,
+                                num_inference_steps=steps, width=width, height=height,
+                                guidance=family.guidance)
+
+
+def peak_gb() -> float | None:
+    """MLX's peak memory for this process, in GB. PRD §9 asks for it in every job."""
+    try:
+        import mlx.core as mx
+    except ImportError:
+        return None
+    return round(mx.get_peak_memory() / 1e9, 1)
+
+
+Loader = Callable[[Family, Path], Any]
+
+
+def run(req: Request, model_dir: Path, *, loader: Loader = load_model,
+        out: Callable[[str], None] = print,
+        now: Callable[[], datetime] = datetime.now) -> dict[str, Any]:
+    """Load, generate, write the PNG and sidecar, and return the job result."""
+    family = family_for(req.model, req.mode)
+    seed = req.seed or random.randint(1, MAX_SEED)
+    steps = req.steps or family.steps
+    size: tuple[int, int] | None = None
+    if req.mode == "generate":
+        size = (req.width or family.width or 1024, req.height or family.height or 1024)
+    elif req.mode == "edit" and req.source is not None:
+        size = fit_area(*image_size(req.source))
+
+    out(f"loading {req.model}")
+    started = time.monotonic()
+    model = loader(family, model_dir)
+    model.callbacks.register(Progress(out))
+    loaded = time.monotonic()
+    generated = _generate(family, model, req, seed, steps, size)
+    finished = time.monotonic()
+
+    picture = generated.image
+    meta = {k: v for k, v in {
+        "mode": req.mode, "model": req.model, "seed": seed, "steps": steps,
+        "prompt": req.prompt, "negative": req.negative, "instruction": req.instruction,
+        "source": None if req.source is None else str(req.source), "factor": req.factor,
+        "width": picture.width, "height": picture.height,
+    }.items() if v is not None}
+    path = save_png(picture, req.out_dir, output_name(req.mode, seed, now()), meta)
+    return {**meta, "path": str(path), "preview_b64": preview_b64(picture),
+            "load_s": round(loaded - started, 2), "gen_s": round(finished - loaded, 2),
+            "peak_gb": peak_gb()}
+
+
+# ---------------------------------------------------------------------------
+# cli
+# ---------------------------------------------------------------------------
+
+
+def main(argv: list[str] | None = None) -> int:
+    # Before anything imports huggingface_hub or tqdm: both read these once, at import.
+    os.environ["TQDM_DISABLE"] = "1"
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    import modelctl as mc
+
+    args = build_parser().parse_args(argv)
+
+    def say(line: str) -> None:
+        print(line, flush=True)
+
+    try:
+        req = request_from_args(args)
+        model_dir = mc.resolve(req.model)
+        if model_dir is None:
+            raise ImageError(f"{req.model} is not downloaded. Fetch it with: {pull_command(req.model)}")
+        result = run(req, Path(model_dir), out=say)
+    except ImageError as e:
+        # modelctld reports a failed job's last line verbatim, so this line is the error the user sees.
+        print(f"error: {e}", file=sys.stderr, flush=True)
+        return 1
+
+    if args.out is not None:
+        args.out.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+    say(f"done: {result['path']}  load {result['load_s']}s  generate {result['gen_s']}s  "
+        f"peak {result['peak_gb']} GB")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
