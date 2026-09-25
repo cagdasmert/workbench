@@ -36,6 +36,9 @@
     },
     {
       "path": "plugins/transcribe"
+    },
+    {
+      "path": "plugins/vault-search"
     }
   ]
 }
