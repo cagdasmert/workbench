@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
+
+from PIL import Image
 
 import image
 
@@ -49,6 +53,108 @@ class PullCommandTest(unittest.TestCase):
 
     def test_other_repos_pull_whole(self) -> None:
         self.assertEqual(image.pull_command(image.DEFAULT_MODEL), f"modelctl pull {image.DEFAULT_MODEL}")
+
+
+def _png(path: Path, w: int, h: int) -> Path:
+    Image.new("RGB", (w, h), (120, 90, 60)).save(path)
+    return path
+
+
+class RequestTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self._orig = (image.DEFAULT_OUT_DIR, image.DENIED_WRITE_ROOTS)
+        image.DEFAULT_OUT_DIR = self.tmp / "Pictures"
+        image.DENIED_WRITE_ROOTS = (self.tmp / "plugins",)
+        self.out = str(self.tmp)
+
+    def tearDown(self) -> None:
+        image.DEFAULT_OUT_DIR, image.DENIED_WRITE_ROOTS = self._orig
+        self._tmp.cleanup()
+
+    def test_generate_takes_the_default_model_and_leaves_steps_to_it(self) -> None:
+        req = image.build_request("generate", out_dir=self.out, prompt="  a green gate ")
+        self.assertEqual((req.model, req.prompt, req.steps, req.seed), (image.DEFAULT_MODEL, "a green gate", None, None))
+
+    def test_zero_steps_and_seed_mean_default_and_random(self) -> None:
+        # The plugin's command args declare 0 as "empty" for both.
+        req = image.build_request("generate", out_dir=self.out, prompt="x", steps=0, seed=0)
+        self.assertEqual((req.steps, req.seed), (None, None))
+
+    def test_bad_generate_requests(self) -> None:
+        for kw in ({"prompt": ""}, {"prompt": 5}, {"prompt": "x", "steps": 101},
+                   {"prompt": "x", "steps": True}, {"prompt": "x", "width": 1000},
+                   {"prompt": "x", "width": 128}, {"prompt": "x", "seed": -1},
+                   {"prompt": "x", "negative": "blurry"},          # Z-Image Turbo takes none
+                   {"prompt": "x", "model": "black-forest-labs/FLUX.1-schnell"}):
+            with self.subTest(kw=kw), self.assertRaises(image.ImageError):
+                image.build_request("generate", out_dir=self.out, **kw)
+
+    def test_a_failed_request_creates_no_folder(self) -> None:
+        with self.assertRaises(image.ImageError):
+            image.build_request("generate", prompt="")
+        self.assertFalse(image.DEFAULT_OUT_DIR.exists())
+
+    def test_edit_needs_a_readable_png_jpeg_or_webp_and_an_instruction(self) -> None:
+        good = _png(self.tmp / "wall.png", 640, 480)
+        (self.tmp / "photo.heic").write_bytes(b"x")
+        (self.tmp / "broken.png").write_bytes(b"not an image")
+        req = image.build_request("edit", out_dir=self.out, source=str(good), instruction="stone")
+        self.assertEqual((req.model, req.source, req.instruction), (image.DEFAULT_EDIT_MODEL, good, "stone"))
+        cases = {
+            "sips": {"source": str(self.tmp / "photo.heic"), "instruction": "x"},
+            "absolute": {"source": "wall.png", "instruction": "x"},
+            "no such file": {"source": str(self.tmp / "none.png"), "instruction": "x"},
+            "not a readable image": {"source": str(self.tmp / "broken.png"), "instruction": "x"},
+            "instruction is required": {"source": str(good), "instruction": "  "},
+        }
+        for needle, kw in cases.items():
+            with self.subTest(needle=needle), self.assertRaises(image.ImageError) as cm:
+                image.build_request("edit", out_dir=self.out, **kw)
+            self.assertIn(needle, str(cm.exception))
+
+    def test_upscale_factor_and_the_4096_limit(self) -> None:
+        small = _png(self.tmp / "small.png", 1000, 800)
+        wide = _png(self.tmp / "wide.png", 2100, 1000)
+        self.assertEqual(image.build_request("upscale", out_dir=self.out, source=str(small)).factor, 2)
+        self.assertEqual(image.build_request("upscale", out_dir=self.out, source=str(small), factor=3).factor, 3)
+        for kw in ({"source": str(small), "factor": 4}, {"source": str(small), "factor": "2"},
+                    {"source": str(small), "factor": True}):
+            with self.subTest(kw=kw), self.assertRaises(image.ImageError):
+                image.build_request("upscale", out_dir=self.out, **kw)
+        with self.assertRaises(image.ImageError) as cm:
+            image.build_request("upscale", out_dir=self.out, source=str(wide))
+        self.assertIn("4096", str(cm.exception))
+
+    def test_argv_round_trips_for_every_mode(self) -> None:
+        src = _png(self.tmp / "src.png", 320, 240)
+        requests = [
+            image.build_request("generate", out_dir=self.out, prompt="-starts with a dash",
+                                seed=7, steps=12, width=768, height=512),
+            image.build_request("edit", out_dir=self.out, source=str(src), instruction="oak, not pine", seed=3),
+            image.build_request("upscale", out_dir=self.out, source=str(src), factor=3),
+        ]
+        for req in requests:
+            with self.subTest(mode=req.mode):
+                args = image.build_parser().parse_args(image.to_argv(req))
+                self.assertEqual(image.request_from_args(args), req)
+
+    def test_params_drop_what_was_not_asked(self) -> None:
+        req = image.build_request("generate", out_dir=self.out, prompt="a gate")
+        self.assertEqual(image.params_of(req), {"mode": "generate", "model": image.DEFAULT_MODEL, "prompt": "a gate"})
+
+
+class SizeTest(unittest.TestCase):
+    def test_fit_area_keeps_aspect_at_one_megapixel_in_multiples_of_16(self) -> None:
+        self.assertEqual(image.fit_area(2048, 1536), (1168, 880))
+        self.assertEqual(image.fit_area(4032, 3024), (1168, 880))
+        self.assertEqual(image.fit_area(512, 384), (512, 384))
+        self.assertEqual(image.fit_area(1000, 1000), (992, 992))
+
+    def test_image_size_reads_the_header(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(image.image_size(_png(Path(tmp) / "a.png", 33, 17)), (33, 17))
 
 
 if __name__ == "__main__":

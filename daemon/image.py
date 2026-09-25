@@ -225,3 +225,213 @@ def preview_b64(image: Any, edge: int = PREVIEW_EDGE) -> str:
     buf = io.BytesIO()
     small.save(buf, format="JPEG", quality=82)
     return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+# ---------------------------------------------------------------------------
+# requests -- one validator for modelctld (a 400) and the CLI
+# ---------------------------------------------------------------------------
+
+MIME_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
+EDIT_MAX_AREA = 1024 * 1024         # edits run at about one megapixel
+UPSCALE_FACTORS = (2, 3)
+UPSCALE_MAX_EDGE = 4096
+SIZE_MULTIPLE = 16
+MAX_SEED = 2**31 - 1
+
+
+def validate_source(raw: object) -> Path:
+    """An absolute path to an existing PNG, JPEG or WebP, or an ImageError that says why not."""
+    if not isinstance(raw, str) or not raw:
+        raise ImageError("path to a source image is required")
+    p = Path(raw).expanduser()
+    if not p.is_absolute():
+        raise ImageError(f"path must be absolute, got {raw!r}")
+    suffix = p.suffix.lower()
+    if suffix in (".heic", ".heif"):
+        raise ImageError(f"{p.name} is HEIC, which image.py does not read. Convert it first: "
+                         f"sips -s format jpeg '{p}' --out '{p.with_suffix('.jpg')}'")
+    if suffix not in MIME_TYPES:
+        raise ImageError(f"{p.name} is not a PNG, JPEG or WebP image")
+    if not p.is_file():
+        raise ImageError(f"no such file: {p}")
+    return p
+
+
+def image_size(path: Path) -> tuple[int, int]:
+    """(width, height) from the file header. Pillow does not decode pixels for this."""
+    from PIL import Image, UnidentifiedImageError
+
+    try:
+        with Image.open(path) as im:
+            return im.size
+    except (UnidentifiedImageError, OSError) as e:
+        raise ImageError(f"{path.name} is not a readable image ({e})") from None
+
+
+def _down(value: float) -> int:
+    return max(SIZE_MULTIPLE, int(value) // SIZE_MULTIPLE * SIZE_MULTIPLE)
+
+
+def fit_area(width: int, height: int, max_area: int = EDIT_MAX_AREA) -> tuple[int, int]:
+    """`width` x `height` scaled to at most `max_area` pixels, aspect kept, sides multiples of 16.
+
+    A 12 MP phone photo edited at full size would not fit in memory, and the
+    edit models work at about one megapixel anyway.
+    """
+    scale = min(1.0, math.sqrt(max_area / (width * height)))
+    return _down(width * scale), _down(height * scale)
+
+
+def upscaled_size(width: int, height: int, factor: int) -> tuple[int, int]:
+    out_w, out_h = width * factor, height * factor
+    if max(out_w, out_h) > UPSCALE_MAX_EDGE:
+        raise ImageError(f"{width}x{height} at {factor}x would be {out_w}x{out_h}. The limit is "
+                         f"{UPSCALE_MAX_EDGE} px on the long edge, so use a smaller factor or image")
+    return out_w, out_h
+
+
+def _opt_int(name: str, value: object, lo: int, hi: int) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or not lo <= value <= hi:
+        raise ImageError(f"{name} must be a whole number from {lo} to {hi}, got {value!r}")
+    return value
+
+
+def _size(name: str, value: object) -> int | None:
+    v = _opt_int(name, value, 256, 2048)
+    if v is not None and v % SIZE_MULTIPLE:
+        raise ImageError(f"{name} must be a multiple of {SIZE_MULTIPLE}, got {v}")
+    return v
+
+
+def _text(name: str, value: object, *, required: bool) -> str | None:
+    if value is not None and not isinstance(value, str):
+        raise ImageError(f"{name} must be text, got {value!r}")
+    stripped = (value or "").strip()
+    if not stripped:
+        if required:
+            raise ImageError(f"{name} is required")
+        return None
+    return stripped
+
+
+@dataclass(frozen=True)
+class Request:
+    mode: str                          # one of ROLES
+    model: str
+    out_dir: Path
+    prompt: str | None = None          # generate
+    negative: str | None = None        # generate, where the family takes one
+    instruction: str | None = None     # edit
+    source: Path | None = None         # edit, upscale
+    factor: int | None = None          # upscale
+    steps: int | None = None           # None: the family's default
+    seed: int | None = None            # None: random, chosen when the job runs
+    width: int | None = None           # generate; None: the family's default
+    height: int | None = None
+
+
+def build_request(mode: str, *, model: object = None, out_dir: object = None,
+                  prompt: object = None, negative: object = None, instruction: object = None,
+                  source: object = None, factor: object = None, steps: object = None,
+                  seed: object = None, width: object = None, height: object = None) -> Request:
+    """Validate one request. modelctld turns an ImageError into a 400; the CLI prints it.
+
+    0 for steps or seed means "not set", as the plugin's command args define it.
+    The output folder is resolved last, so a request that fails creates nothing.
+    """
+    if mode not in ROLES:
+        raise ImageError(f"mode must be one of {', '.join(ROLES)}, got {mode!r}")
+    repo = _text("model", model, required=False) or DEFAULTS[mode]
+    family = family_for(repo, mode)
+    seed_v = _opt_int("seed", seed, 0, MAX_SEED) or None
+
+    if mode == "upscale":
+        src = validate_source(source)
+        factor_v = 2 if factor is None else factor
+        if isinstance(factor_v, bool) or not isinstance(factor_v, int) or factor_v not in UPSCALE_FACTORS:
+            raise ImageError(f"factor must be 2 or 3, got {factor!r}")
+        upscaled_size(*image_size(src), factor_v)
+        return Request(mode, repo, resolve_out_dir(out_dir), source=src, factor=factor_v, seed=seed_v)
+
+    steps_v = _opt_int("steps", steps, 0, 100) or None
+    if mode == "edit":
+        src = validate_source(source)
+        image_size(src)            # an unreadable file is a 400 now, not a failed job later
+        text = _text("instruction", instruction, required=True)
+        return Request(mode, repo, resolve_out_dir(out_dir), instruction=text, source=src,
+                       steps=steps_v, seed=seed_v)
+
+    text = _text("prompt", prompt, required=True)
+    neg = _text("negative", negative, required=False)
+    if neg is not None and not family.negative:
+        raise ImageError(f"{repo} takes no negative prompt")
+    w, h = _size("width", width), _size("height", height)
+    return Request(mode, repo, resolve_out_dir(out_dir), prompt=text, negative=neg,
+                   steps=steps_v, seed=seed_v, width=w, height=h)
+
+
+def to_argv(req: Request) -> list[str]:
+    """image.py's arguments for `req`, which is what modelctld hands the subprocess.
+
+    Every value is attached with '=' so a prompt that starts with '-' is not
+    read as a flag.
+    """
+    argv = [req.mode, f"--model={req.model}", f"--out-dir={req.out_dir}"]
+    for flag, value in (("--prompt", req.prompt), ("--negative", req.negative),
+                        ("--instruction", req.instruction), ("--source", req.source),
+                        ("--factor", req.factor), ("--steps", req.steps), ("--seed", req.seed),
+                        ("--width", req.width), ("--height", req.height)):
+        if value is not None:
+            argv.append(f"{flag}={value}")
+    return argv
+
+
+def params_of(req: Request) -> dict[str, Any]:
+    """The request as job params, so a panel re-attaching knows what is running."""
+    fields = {"mode": req.mode, "model": req.model, "prompt": req.prompt, "negative": req.negative,
+              "instruction": req.instruction, "source": None if req.source is None else str(req.source),
+              "factor": req.factor, "steps": req.steps, "seed": req.seed,
+              "width": req.width, "height": req.height}
+    return {k: v for k, v in fields.items() if v is not None}
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="image", description="generate, edit and upscale images over the modelctl catalog")
+    sub = p.add_subparsers(dest="mode", required=True)
+    for mode in ROLES:
+        s = sub.add_parser(mode)
+        s.add_argument("--model", help=f"repo id (default {DEFAULTS[mode]})")
+        s.add_argument("--out-dir", default="", help=f"where images go (default {DEFAULT_OUT_DIR})")
+        s.add_argument("--out", type=Path, help="write the result as JSON here")
+        s.add_argument("--seed", type=int, help="0 or absent: random")
+        if mode == "generate":
+            s.add_argument("--prompt", required=True)
+            s.add_argument("--negative")
+            s.add_argument("--width", type=int)
+            s.add_argument("--height", type=int)
+        else:
+            s.add_argument("--source", required=True, help="a PNG, JPEG or WebP")
+        if mode == "edit":
+            s.add_argument("--instruction", required=True)
+        if mode == "upscale":
+            s.add_argument("--factor", type=int, default=2)
+        else:
+            s.add_argument("--steps", type=int, help="absent: the model's default")
+    return p
+
+
+def _absolute(raw: str | None) -> str | None:
+    """A path typed by hand may be relative; the validator wants it absolute."""
+    return None if not raw else str(Path(raw).expanduser().absolute())
+
+
+def request_from_args(args: argparse.Namespace) -> Request:
+    return build_request(
+        args.mode, model=args.model, out_dir=_absolute(args.out_dir),
+        prompt=getattr(args, "prompt", None), negative=getattr(args, "negative", None),
+        instruction=getattr(args, "instruction", None), source=_absolute(getattr(args, "source", None)),
+        factor=getattr(args, "factor", None), steps=getattr(args, "steps", None), seed=args.seed,
+        width=getattr(args, "width", None), height=getattr(args, "height", None),
+    )
