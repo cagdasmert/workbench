@@ -4,3 +4,5 @@ dist/
 .DS_Store
 .tsbuild/
 release/
+__pycache__/
+*.pyc
