@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import tempfile
 import unittest
 from pathlib import Path
@@ -93,6 +94,55 @@ class GenerateRouteTest(_ImageRoutes):
         d._local_repos = lambda: ["sentence-transformers/LaBSE", imagegen.DEFAULT_MODEL]
         rows = d.h_image_models()["models"]
         self.assertEqual([(r["repo"], r["role"]) for r in rows], [(imagegen.DEFAULT_MODEL, "generate")])
+
+
+class FileRouteTest(_ImageRoutes):
+    def test_returns_the_full_image_as_base64(self) -> None:
+        src = _png(self.tmp / "big.png", 300, 200)
+        got = d.h_image_file({"path": [str(src)]})
+        self.assertEqual((got["path"], got["type"]), (str(src), "image/png"))
+        self.assertEqual(base64.b64decode(got["b64"]), src.read_bytes())
+
+    def test_refusals(self) -> None:
+        (self.tmp / "notes.txt").write_text("x")
+        _png(self.tmp / "big.png", 300, 200)
+        d_max, d.IMAGE_FILE_MAX = d.IMAGE_FILE_MAX, 10
+        try:
+            for query, status in (({"path": ["notes.txt"]}, 400),
+                                  ({"path": [str(self.tmp / "notes.txt")]}, 400),
+                                  ({"path": [str(self.tmp / "gone.png")]}, 404),
+                                  ({"path": [str(self.tmp / "big.png")]}, 413)):
+                with self.subTest(query=query), self.assertRaises(d.ApiError) as cm:
+                    d.h_image_file(query)
+                self.assertEqual(cm.exception.status, status)
+        finally:
+            d.IMAGE_FILE_MAX = d_max
+
+
+class SaveRouteTest(_ImageRoutes):
+    def setUp(self) -> None:
+        super().setUp()
+        self.src = _png(self.tmp / "result.png", 64, 64)
+        self.dest = self.tmp / "chosen"
+        self.dest.mkdir()
+
+    def test_copies_and_never_overwrites(self) -> None:
+        first = d.h_image_save({"path": str(self.src), "dir": str(self.dest)})
+        second = d.h_image_save({"path": str(self.src), "dir": str(self.dest)})
+        self.assertEqual((Path(first["path"]).name, Path(second["path"]).name), ("result.png", "result-2.png"))
+        self.assertEqual(Path(second["path"]).read_bytes(), self.src.read_bytes())
+
+    def test_refusals(self) -> None:
+        (self.tmp / "plugins").mkdir()
+        (self.tmp / "a.gif").write_bytes(b"GIF89a")
+        for body, status in (({"path": str(self.src), "dir": "chosen"}, 400),
+                             ({"path": str(self.src), "dir": str(self.tmp / "plugins")}, 400),
+                             ({"path": str(self.tmp / "a.gif"), "dir": str(self.dest)}, 400),
+                             ({"path": str(self.tmp / "gone.png"), "dir": str(self.dest)}, 404)):
+            with self.subTest(body=body), self.assertRaises(d.ApiError) as cm:
+                d.h_image_save(body)
+            self.assertEqual(cm.exception.status, status)
+        self.assertEqual(list(self.dest.iterdir()), [])
 
 
 if __name__ == "__main__":

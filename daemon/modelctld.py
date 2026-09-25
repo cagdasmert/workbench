@@ -45,6 +45,7 @@ Usage
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -76,6 +77,7 @@ ASR_PY = str(Path(__file__).resolve().parent / "asr.py")
 EMBED_PY = str(Path(__file__).resolve().parent / "embed.py")
 TEXT_PY = str(Path(__file__).resolve().parent / "text.py")
 IMAGE_PY = str(Path(__file__).resolve().parent / "image.py")
+IMAGE_FILE_MAX = 50 * 1024 * 1024   # the full image travels as base64 in JSON (C3)
 
 VERSION = "1.0.0"
 
@@ -743,6 +745,45 @@ def h_image(mode: str, body: dict) -> dict:
     return job.as_dict()
 
 
+def h_image_file(q: dict) -> dict:
+    """The full-resolution image, for Send to viewer and the before/after view."""
+    raw = _required(q, "path")
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        raise ApiError(f"path must be absolute, got {raw!r}")
+    kind = imagegen.MIME_TYPES.get(path.suffix.lower())
+    if kind is None:
+        raise ApiError(f"{path.name} is not a PNG, JPEG or WebP image")
+    if not path.is_file():
+        raise ApiError(f"no such file: {path}", status=404)
+    size = path.stat().st_size
+    if size > IMAGE_FILE_MAX:
+        raise ApiError(f"{path.name} is {size / 2**20:.0f} MB; the limit is "
+                       f"{IMAGE_FILE_MAX // 2**20} MB", status=413)
+    return {"path": str(path), "type": kind, "b64": base64.b64encode(path.read_bytes()).decode("ascii")}
+
+
+def h_image_save(body: dict) -> dict:
+    """Save as...: copy one image into a folder the user chose, never overwriting."""
+    raw = _required(body, "path")
+    source = Path(raw).expanduser()
+    if not source.is_absolute() or source.suffix.lower() not in imagegen.MIME_TYPES:
+        raise ApiError(f"path must be an absolute PNG, JPEG or WebP file, got {raw!r}")
+    if not source.is_file():
+        raise ApiError(f"no such file: {source}", status=404)
+    folder = Path(_required(body, "dir")).expanduser()
+    if not folder.is_absolute() or not folder.is_dir():
+        raise ApiError(f"dir must be an existing absolute folder, got {str(folder)!r}")
+    problem = imagegen.write_denied(folder)
+    if problem:
+        raise ApiError(problem)
+    try:
+        written = imagegen.copy_new(source, folder)
+    except imagegen.ImageError as e:
+        raise ApiError(str(e)) from None
+    return {"path": str(written)}
+
+
 # ---------------------------------------------------------------------------
 # index -- the vault index; reads in-process, embedding as an embed.py job
 # ---------------------------------------------------------------------------
@@ -1176,10 +1217,14 @@ class Handler(BaseHTTPRequestHandler):
             leaf = rest[2:]
             if method == "GET" and leaf == ["models"]:
                 return h_image_models()
+            if method == "GET" and leaf == ["file"]:
+                return h_image_file(q)
             if method == "POST" and leaf == []:
                 return h_image("generate", body)
             if method == "POST" and leaf in (["edit"], ["upscale"]):
                 return h_image(leaf[0], body)
+            if method == "POST" and leaf == ["save"]:
+                return h_image_save(body)
 
         if method == "POST" and rest == ["generate", "text"]:
             return h_text(body)
@@ -1220,6 +1265,7 @@ def serve(host: str = "127.0.0.1", port: int = DEFAULT_PORT, token: str = "") ->
     print("           /v1/catalog/{pull,mv,rm} (POST)  /v1/jobs[/<id>]")
     print("           /v1/generate/asr (POST)  /v1/generate/asr/probe  /v1/generate/asr/save (POST)")
     print("           /v1/generate/image[/edit|/upscale] (POST)  /v1/generate/image/models")
+    print("           /v1/generate/image/file  /v1/generate/image/save (POST)")
     print("           /v1/index/folders[/<name>] (GET, POST, DELETE)  /v1/index/folders/<name>/remove (POST)")
     print("           /v1/index/refresh (POST)")
     print("           /v1/search (POST)  /v1/embed (POST)")
