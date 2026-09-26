@@ -37,7 +37,7 @@ export type HistoryEntry = {
 
 export const DEFAULT_HISTORY_LIMIT = 200;
 
-const ROLES: readonly string[] = ['generate', 'edit', 'upscale'];
+const ROLES = ['generate', 'edit', 'upscale'] as const satisfies readonly Role[];
 const isStr = (v: unknown): v is string => typeof v === 'string';
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 const strOrNull = (v: unknown): boolean => v === null || isStr(v);
@@ -46,7 +46,10 @@ const numOrNull = (v: unknown): boolean => v === null || isNum(v);
 function isEntry(v: unknown): v is HistoryEntry {
   if (typeof v !== 'object' || v === null) return false;
   const e = v as Record<string, unknown>;
-  return isStr(e['id']) && isStr(e['mode']) && ROLES.includes(e['mode'] as string)
+  // F11: ROLES is now typed from Role itself, so tsc can no longer accept a
+  // plain string here — the preceding isStr check is what makes this sound
+  // (ruling 3, adapted: a Role cast, not a string one, now that ROLES is Role[]).
+  return isStr(e['id']) && isStr(e['mode']) && ROLES.includes(e['mode'] as Role)
     && isStr(e['model']) && isNum(e['seed']) && numOrNull(e['steps'])
     && isNum(e['width']) && isNum(e['height'])
     && strOrNull(e['prompt']) && strOrNull(e['negative']) && strOrNull(e['instruction'])
