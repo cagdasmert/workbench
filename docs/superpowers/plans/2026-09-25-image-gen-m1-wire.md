@@ -22,7 +22,9 @@
 - **Every file the daemon writes uses exclusive create** (`open(…, "xb")`), gets `-2`, `-3`, … after a name collision, and never overwrites. Nothing is ever written under `~/Library/Application Support/Workbench/plugins/`.
 - **One `image` job at a time, across all models**, refused with a 409 whose hint names the running job's id.
 - **Error messages are written for the user.** Hints name the fix (a `modelctl pull …` command, a `sips` command, and so on).
-- **Tests never load weights.** A fake model stands in for mflux. Real generation is checked only at the Task 8 gate.
+- **Tests never load weights.** A fake model stands in for mflux. Real generation is checked only at the Task 9 gate.
+- **No agent downloads models.** The user pulls them with `modelctl`. A step that needs weights checks `modelctl ls`, and if they are missing it stops and names the pull commands. *(Added 2026-09-26.)*
+- **A model is a repo id or an absolute folder path** (spec decision 5, amended 2026-09-26).
 - **The full suite stays green after every task.** `cd /Users/cagdasmert/work/WS/workbench/daemon && ~/work/tools/huggingface/.venv/bin/python -m unittest discover -s tests` passes 91 tests before this plan starts.
 - Work on branch `image-gen`. Every commit message ends with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 
@@ -1879,24 +1881,208 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ---
 
-### Task 8: The gate — real models over `curl`, then the record
+### Task 8: A model is a repo id or a folder path
+
+*(Added 2026-09-26, spec decision 5 amended.)* The user manages downloads with modelctl and wants every model setting to accept the path of a downloaded model as well as a repo id.
+
+**Files:**
+- Modify: `daemon/image.py`: `is_path` and `model_dir` in the families section, the model check in `build_request`, and the lookup in `main`
+- Modify: `daemon/modelctld.py`: the 404 check in `h_image`
+- Test: `daemon/tests/test_image.py`, `daemon/tests/test_modelctld_image.py` (append)
+
+**Interfaces:**
+- Consumes: `family_for`, `DEFAULTS`, `build_request`, `to_argv`, `build_parser`, `request_from_args` (Tasks 1–3); `h_image` (Task 6)
+- Produces:
+  - `is_path(model: str) -> bool`
+  - `model_dir(model: str, resolve: Callable[[str], str | None]) -> Path | None`
+  - `Request.model` now holds the repo id **or the expanded absolute folder path**. `to_argv` passes it through `--model=` unchanged.
+
+- [ ] **Step 1: Write the failing tests**
+
+In `daemon/tests/test_image.py`, add `import os` and `from unittest import mock` to the imports, then append before `if __name__`:
+
+```python
+class ModelPathTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self._orig = (image.DEFAULT_OUT_DIR, image.DENIED_WRITE_ROOTS)
+        image.DEFAULT_OUT_DIR = self.tmp / "Pictures"
+        image.DENIED_WRITE_ROOTS = (self.tmp / "plugins",)
+        self.out = str(self.tmp)
+
+    def tearDown(self) -> None:
+        image.DEFAULT_OUT_DIR, image.DENIED_WRITE_ROOTS = self._orig
+        self._tmp.cleanup()
+
+    def test_a_folder_whose_path_names_the_family_is_used_as_given(self) -> None:
+        folder = self.tmp / "models--mflux-community--z-image-turbo-mflux-q8" / "snapshots" / "abc"
+        folder.mkdir(parents=True)
+        req = image.build_request("generate", model=str(folder), out_dir=self.out, prompt="x")
+        self.assertEqual(req.model, str(folder))
+        self.assertEqual(image.model_dir(req.model, lambda repo: self.fail("a path is never looked up")), folder)
+
+    def test_tilde_is_expanded(self) -> None:
+        (self.tmp / "seedvr2-3b").mkdir()
+        src = _png(self.tmp / "small.png", 100, 100)
+        with mock.patch.dict(os.environ, {"HOME": str(self.tmp)}):
+            req = image.build_request("upscale", model="~/seedvr2-3b", out_dir=self.out, source=str(src))
+        self.assertEqual(req.model, str(self.tmp / "seedvr2-3b"))
+
+    def test_a_missing_folder_is_refused(self) -> None:
+        with self.assertRaises(image.ImageError) as cm:
+            image.build_request("generate", model=str(self.tmp / "z-image-turbo-gone"), out_dir=self.out, prompt="x")
+        self.assertIn("does not exist", str(cm.exception))
+
+    def test_a_folder_that_names_no_family_is_refused_listing_the_names(self) -> None:
+        (self.tmp / "my-model").mkdir()
+        with self.assertRaises(image.ImageError) as cm:
+            image.build_request("generate", model=str(self.tmp / "my-model"), out_dir=self.out, prompt="x")
+        self.assertIn("z-image-turbo", str(cm.exception))
+
+    def test_a_repo_id_is_looked_up(self) -> None:
+        self.assertEqual(image.model_dir(image.DEFAULT_MODEL, lambda repo: f"/snap/{repo}"),
+                         Path(f"/snap/{image.DEFAULT_MODEL}"))
+        self.assertIsNone(image.model_dir(image.DEFAULT_MODEL, lambda repo: None))
+
+    def test_a_folder_model_round_trips_through_argv(self) -> None:
+        folder = self.tmp / "z-image-turbo"
+        folder.mkdir()
+        req = image.build_request("generate", model=str(folder), out_dir=self.out, prompt="x")
+        self.assertEqual(image.request_from_args(image.build_parser().parse_args(image.to_argv(req))), req)
+```
+
+In `daemon/tests/test_modelctld_image.py`, append to `GenerateRouteTest`:
+
+```python
+    def test_a_model_folder_runs_without_a_catalog_lookup(self) -> None:
+        d.mc.resolve = lambda repo, cfg=None: self.fail("a folder path is never looked up in the catalog")
+        folder = self.tmp / "z-image-turbo-q8"
+        folder.mkdir()
+        job = d.h_image("generate", {"prompt": "x", "model": str(folder), "out_dir": str(self.tmp)})
+        _, repo, args, _ = self.started[0]
+        self.assertEqual((job["repo"], repo), (str(folder), str(folder)))
+        self.assertIn(f"--model={folder}", args)
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `cd /Users/cagdasmert/work/WS/workbench/daemon && ~/work/tools/huggingface/.venv/bin/python -m unittest tests.test_image tests.test_modelctld_image -v`
+Expected: the new tests fail, with `AttributeError: module 'image' has no attribute 'model_dir'`, the "does not exist" assertion, and a folder the route tries to look up in the catalog. The 18 + 9 existing tests still pass.
+
+- [ ] **Step 3: Implement in `daemon/image.py`**
+
+After `pull_command`, still in the families section, add:
+
+```python
+def is_path(model: str) -> bool:
+    """A model given as a folder, rather than as a repo id for modelctl to find."""
+    return model.startswith(("/", "~"))
+
+
+def model_dir(model: str, resolve: Callable[[str], str | None]) -> Path | None:
+    """The folder to load `model` from.
+
+    A folder path is used as given. A repo id is wherever modelctl keeps it
+    (`resolve`), or None when it has not been pulled.
+    """
+    if is_path(model):
+        return Path(model)
+    found = resolve(model)
+    return None if found is None else Path(found)
+```
+
+In `build_request`, replace the two lines
+
+```python
+    repo = _text("model", model, required=False) or DEFAULTS[mode]
+    family = family_for(repo, mode)
+```
+
+with:
+
+```python
+    repo = _text("model", model, required=False) or DEFAULTS[mode]
+    if is_path(repo):
+        folder = Path(repo).expanduser()
+        if not folder.is_absolute() or not folder.is_dir():
+            raise ImageError(f"model folder {repo!r} does not exist")
+        repo = str(folder)
+    family = family_for(repo, mode)   # a folder's path must name its family, as modelctl's layout does
+```
+
+In `main`, replace
+
+```python
+        model_dir = mc.resolve(req.model)
+        if model_dir is None:
+            raise ImageError(f"{req.model} is not downloaded. Fetch it with: {pull_command(req.model)}")
+        result = run(req, Path(model_dir), out=say)
+```
+
+with:
+
+```python
+        folder = model_dir(req.model, mc.resolve)
+        if folder is None:
+            raise ImageError(f"{req.model} is not downloaded. Fetch it with: {pull_command(req.model)}")
+        result = run(req, folder, out=say)
+```
+
+- [ ] **Step 4: Use `model_dir` in `h_image` (`daemon/modelctld.py`)**
+
+Replace
+
+```python
+    if mc.resolve(req.model, cfg=_cfg()) is None:
+```
+
+with:
+
+```python
+    if imagegen.model_dir(req.model, lambda repo: mc.resolve(repo, cfg=_cfg())) is None:
+```
+
+The next two lines (the 404 with `pull_command`) are unchanged. A folder path never reaches them, because `build_request` has already checked that it exists.
+
+- [ ] **Step 5: Run the tests and the full suite**
+
+Run: `cd /Users/cagdasmert/work/WS/workbench/daemon && ~/work/tools/huggingface/.venv/bin/python -m unittest tests.test_image tests.test_modelctld_image tests.test_image_run -v && ~/work/tools/huggingface/.venv/bin/python -m unittest discover -s tests`
+Expected: `test_image` 24, `test_modelctld_image` 10 and `test_image_run` 6, all OK; full suite `OK` (147 tests)
+
+- [ ] **Step 6: Commit**
+
+```bash
+cd /Users/cagdasmert/work/WS/workbench
+git add daemon/image.py daemon/modelctld.py daemon/tests/test_image.py daemon/tests/test_modelctld_image.py
+git commit -m "image: a model is a repo id or a folder path
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 9: The gate — real models over `curl`, then the record
 
 **Files:**
 - Modify: `daemon/README.md` (the script table), `docs/m1-shell-change-log.md` (entry 42)
 
-This task runs the real models. `/Volumes/Kingston` may be unmounted, so every pull passes `--to internal`. The internal drive had 152 GB free on 2026-09-25.
+This task runs the real models, which **the user downloads with modelctl**. No agent pulls them.
 
 Pick a scratch folder (your session scratchpad, or `mktemp -d`) and use it as `G` below. **Every shell block declares `G` and `PY` again**, because shell state does not carry between tool calls.
 
-- [ ] **Step 1: Pull the two M1 models**
+- [ ] **Step 1: Check that the user has pulled the two M1 models**
+
+```bash
+modelctl ls
+```
+
+Expected: `mflux-community/z-image-turbo-mflux-q8` at about 11.0 GB and `numz/SeedVR2_comfyUI` at about 7.3 GB. **If either is missing or short, STOP** and report NEEDS_CONTEXT with these commands for the user:
 
 ```bash
 modelctl pull mflux-community/z-image-turbo-mflux-q8 --to internal
 modelctl pull numz/SeedVR2_comfyUI --to internal --include seedvr2_ema_3b_fp16.safetensors ema_vae_fp16.safetensors
-modelctl ls
 ```
-
-Expected: both listed, about 11.0 GB and 7.3 GB.
 
 - [ ] **Step 2: Start a test daemon on port 8078, in the background**
 
@@ -1930,11 +2116,14 @@ Expected:
 
 If the job failed, its `error` is `image.py`'s last line. Fix the cause, and add a unit test if the cause is in our code, before going on.
 
-- [ ] **Step 4: Gate 2 — the same seed gives the same pixels (PRD criterion 3)**
+- [ ] **Step 4: Gate 2 — the same seed gives the same pixels (PRD criterion 3), with the model given as a folder path**
+
+This run gives the model as the folder `modelctl path` prints instead of the repo id, so it proves two things at once: that a folder path loads the same weights, and that a fixed seed is deterministic.
 
 ```bash
 G=<scratch>/imagegen-m1; PY=~/work/tools/huggingface/.venv/bin/python
-BODY='{"prompt":"a green wooden garden gate set in an old stone wall, morning light","seed":1234,"out_dir":"'"$G"'"}'
+MODEL_DIR=$(modelctl path mflux-community/z-image-turbo-mflux-q8); echo "$MODEL_DIR"
+BODY='{"prompt":"a green wooden garden gate set in an old stone wall, morning light","seed":1234,"model":"'"$MODEL_DIR"'","out_dir":"'"$G"'"}'
 ID2=$(curl -s -X POST localhost:8078/v1/generate/image -H 'content-type: application/json' -d "$BODY" | $PY -c 'import json,sys; print(json.load(sys.stdin)["id"])')
 while [ "$(curl -s localhost:8078/v1/jobs/$ID2 | $PY -c 'import json,sys; print(json.load(sys.stdin)["state"])')" = running ]; do sleep 3; done
 curl -s localhost:8078/v1/jobs/$ID2 > "$G/job2.json"
@@ -2008,13 +2197,18 @@ check-then-add gap `running_for` left, and it is what stops two image models swa
 **Loading has no percent.** `image.py` switches tqdm off and prints its own `step i/n  p%` lines from an mflux
 callback. Nothing before the loop contains `%`, so `percent: null` means "loading model" without a new job field.
 
+**A model is a repo id or a folder path.** Downloads are the user's, through modelctl. A repo id is found wherever
+modelctl put it. A value starting with `/` or `~` is loaded exactly as given, never looked up, and must name its family
+in its path, as modelctl's `models--org--name` layout always does.
+
 **Verified** on the real models (Z-Image Turbo q8, SeedVR2 3B, M4 Pro, 48 GB):
 - Generate, 1024², no steps sent → 9 steps. load <load_s> s, generate <gen_s> s, peak <peak_gb> GB.
 - The same seed twice → pixel-identical (sha256 of the decoded pixels).
 - A second POST while one ran → 409 naming the running job.
 - Upscale 2× → <W>×<H>, load <load_s> s, generate <gen_s> s, peak <peak_gb> GB.
 - `/file` and `/save` (the second save lands as `-2.png`).
-- 49 new daemon tests (140 total). No test loads weights.
+- The second run gave the model as a folder path (`modelctl path`) and produced the same pixels.
+- 56 new daemon tests (147 total). No test loads weights.
 
 **Not yet verified:** editing — the edit model is pulled at the facade spike, which decides `editModel`.
 
@@ -2026,7 +2220,7 @@ Replace every `<…>` with the measured value. Do not commit the entry until eve
 - [ ] **Step 8: Run the full suite once more, then commit**
 
 Run: `cd /Users/cagdasmert/work/WS/workbench/daemon && ~/work/tools/huggingface/.venv/bin/python -m unittest discover -s tests`
-Expected: `OK` (140 tests)
+Expected: `OK` (147 tests)
 
 ```bash
 cd /Users/cagdasmert/work/WS/workbench

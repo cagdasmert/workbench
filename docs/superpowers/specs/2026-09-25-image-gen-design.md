@@ -49,7 +49,8 @@ The daemon moved into the repo as this branch's first commit (`6308694`); see
    the start, which keeps 12–28 GB resident between runs and makes cancel harder.)
 3. **Weights are pre-quantized `mflux-community` repos, pulled through modelctl.** They are
    ordinary Hugging Face repos, so `modelctl pull` and `resolve()` handle them unchanged, and a
-   fresh subprocess does not re-quantize the full weights on every run.
+   fresh subprocess does not re-quantize the full weights on every run. Each setting takes a
+   repo id or an absolute folder path (decision 5).
 
    | Setting | Default | Disk |
    |---|---|---|
@@ -65,9 +66,20 @@ The daemon moved into the repo as this branch's first commit (`6308694`); see
    request validation. mflux is imported only inside the run functions. The daemon imports
    `image.py` in-process to validate each request, so a bad request is a 400, not a failed job.
    The "Z-Image uses 9 steps" knowledge exists in this table and nowhere else.
-5. **Models are found only through `modelctl.resolve()`,** and the resolved path is passed to
-   mflux as `model_path`. mflux never downloads anything. A model that has not been pulled is a
-   404 whose hint says to pull it.
+5. **A model is a repo id or an absolute folder path.** *(Amended 2026-09-26: the user manages
+   downloads through modelctl, and wants the plugin configurable by the path of downloaded
+   models.)*
+   - **A repo id** is found through `modelctl.resolve()`, wherever modelctl put it, on the
+     internal or the external drive. A repo that has not been pulled is a 404 whose hint is the
+     `modelctl pull` command.
+   - **A value starting with `/` or `~`** is a folder path and is used exactly as given. It must
+     be an existing folder, otherwise the request is a 400, and it is never looked up in the
+     catalog.
+   - **The family comes from the name either way**, so a folder's path must contain a family
+     name (`z-image-turbo`, `qwen-image-edit`, `flux2-klein-9b`, `seedvr2`), or the 400 lists
+     them. modelctl's own layout (`models--org--name/snapshots/…`) always does.
+   - **The resolved folder is passed to mflux as `model_path`.** mflux never downloads anything,
+     and no route or job downloads weights: the user pulls them with modelctl.
 6. **Output.** Each image is written to `<out_dir>/YYYYMMDD-HHMMSS_<mode>_<seed>.png` with
    exclusive create, adding `-2`, `-3` and so on after a collision. Beside it goes a JSON
    sidecar with the full request, the seed and the model, and the PNG carries the same fields
@@ -171,9 +183,11 @@ POST /v1/generate/image           { prompt, model?, steps?, seed?, width?, heigh
 POST /v1/generate/image/edit      { path, instruction, model?, seed?, steps?, out_dir? }    ✗ strength
 POST /v1/generate/image/upscale   { path, factor? = 2, model?, out_dir? }
      → Job (kind 'image', repo = the model)
+     model: a repo id, or an absolute folder path (decision 5).
      seed 0 or absent = random; the seed actually used is always in the result.
      400 bad field, source not an absolute PNG/JPEG/WebP file, out_dir not an existing absolute
-         directory, out_dir under the Workbench plugin directory
+         directory, out_dir under the Workbench plugin directory, model folder missing or naming
+         no family
      404 model not downloaded (hint: the modelctl pull command, with --include for SeedVR2)
      409 ★ another image job is running (hint: its id) · model busy (pull/mv/rm)
 
@@ -215,7 +229,7 @@ plugins/image-gen/
 
 | | Builds | Gate |
 |---|---|---|
-| **M1 wire** | Install mflux 0.20.0. Pull Z-Image q8 and SeedVR2 3B (two files). `image.py` (FAMILIES, generate, edit, upscale), the six routes, the one-image-job rule. | `curl`: generating with no `steps` runs 9 steps; the same seed twice gives pixel-identical output; `load_s`, `gen_s` and `peak_gb` are reported; a second concurrent job gets a 409; one upscale succeeds. |
+| **M1 wire** | Install mflux 0.20.0. `image.py` (FAMILIES, generate, edit, upscale), models as repo ids or folder paths, the six routes, the one-image-job rule. The user pulls Z-Image q8 and SeedVR2 3B (two files) with modelctl before the gate. | `curl`: generating with no `steps` runs 9 steps; the same seed twice gives pixel-identical output; `load_s`, `gen_s` and `peak_gb` are reported; a second concurrent job gets a 409; one upscale succeeds. |
 | **Spike: facade** | No code. Pull Qwen-Edit q6 and Klein 9B q8, then run one instruction on a real photo of the front wall through each. | The user compares the two before/after pairs, with time and peak memory, and picks `editModel`. **If neither is usable, stop** and rethink use case 1 before any Edit UI is built. |
 | **M2 generate** | Plugin: client, form, poller, Generate mode, result view, persisted history strip, re-attach, disposal test. | Generate from the app. Close the panel mid-run and reopen it: the job re-attaches. Restart the app: the tile is still there. |
 | **M3 edit and upscale** | Both modes, *Pick…*, before/after, *Use as edit source*. | The facade before/after, run from the app (criterion 4). |
