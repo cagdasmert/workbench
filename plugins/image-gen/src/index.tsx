@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { PanelContext, Plugin } from '@workbench/plugin-sdk';
 import { definePanel } from '@workbench/plugin-sdk/react';
 import {
@@ -11,7 +11,7 @@ import {
 } from './history.js';
 import {
   afterRun, commandRequest, DEFAULT_GENERATE_MODEL, emptyForm, modelOptions, placeholders,
-  rollSeed, runStatus, toGenerateRequest, type GenerateForm,
+  rollSeed, runStatus, toGenerateRequest, toggleLock, type GenerateForm,
 } from './form.js';
 import { startPoller } from './poller.js';
 import { planReattach } from './reattach.js';
@@ -56,17 +56,24 @@ function ImagesPanel({ ctx }: { ctx: PanelContext }) {
 
   const [offline, setOffline] = useState<DaemonError | null>(null);
   const [problem, setProblem] = useState<Problem | null>(null);
-  const [catalog, setCatalog] = useState<ImageModel[]>([]);
+  // F10: null until client.models() resolves, so a missing/undownloaded model
+  // is never flagged from an empty catalog that just hasn't loaded yet.
+  const [catalog, setCatalog] = useState<ImageModel[] | null>(null);
   const [form, setForm] = useState<GenerateForm>(() => emptyForm(DEFAULT_GENERATE_MODEL));
   const [running, setRunning] = useState<ImageJob | null>(null);
   // null shows the newest entry.
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // F8: true from a Generate/Cancel click until that request settles.
+  const [pending, setPending] = useState(false);
 
   // Read inside callbacks that must not be rebuilt every time these change.
   const historyRef = useRef(history);
   historyRef.current = history;
   const limitRef = useRef(limit);
   limitRef.current = limit;
+  // F5: the array set by the load effect, so the persist effect can tell "just
+  // loaded" apart from "changed since" without writing back what it just read.
+  const loadedRef = useRef<HistoryEntry[] | null>(null);
 
   const client = useMemo(() => new ImageClient(ctx.plugin, daemonUrl, token), [ctx, daemonUrl, token]);
 
@@ -90,7 +97,9 @@ function ImagesPanel({ ctx }: { ctx: PanelContext }) {
       if (typeof o === 'string') setOutDir(o);
       const lim = historyLimit(l);
       setLimit(lim);
-      setHistory(parseHistory(h, lim));
+      const parsed = parseHistory(h, lim);
+      loadedRef.current = parsed;
+      setHistory(parsed);
       setLoaded(true);
     })();
     return () => { cancelled = true; };
@@ -107,17 +116,15 @@ function ImagesPanel({ ctx }: { ctx: PanelContext }) {
         setForm((f) => ({ ...f, model }));
       }
       if (key === 'outputDir' && typeof value === 'string') setOutDir(value);
-      if (key === 'historyLimit') {
-        const lim = historyLimit(value);
-        setLimit(lim);
-        setHistory((list) => list.slice(0, lim));
-      }
+      if (key === 'historyLimit') setLimit(historyLimit(value));
     });
     return () => { void sub.dispose(); };
   }, [ctx]);
 
   useEffect(() => {
     if (!loaded) return;
+    // Skip the write that would just echo back what the load effect read.
+    if (history === loadedRef.current) return;
     void ctx.plugin.storage.set('history', history);
   }, [ctx, loaded, history]);
 
@@ -181,11 +188,16 @@ function ImagesPanel({ ctx }: { ctx: PanelContext }) {
       },
       onError: (err) => {
         const e = asDaemonError(err);
-        // A 404 means the daemon restarted and forgot the job. Anything else
-        // (offline included) may be a restart in progress: keep polling.
-        if (e.kind !== 'api') return;
-        setRunning(null);
-        setProblem({ message: `${e.message} — the daemon forgets jobs when it restarts.` });
+        // offline: the daemon may just be restarting — keep polling quietly.
+        if (e.kind === 'offline') return;
+        // A 404 means the daemon restarted and forgot the job outright.
+        if (e.kind === 'api' && e.status === 404) {
+          setRunning(null);
+          setProblem({ message: `${e.message} — the daemon forgets jobs when it restarts.` });
+          return;
+        }
+        // Anything else: show it, but keep polling — the loop may still recover.
+        setProblem(e);
       },
       next: (job) => (job.state === 'running' ? 1_000 : undefined),
     });
@@ -194,11 +206,14 @@ function ImagesPanel({ ctx }: { ctx: PanelContext }) {
 
   // ─── actions ───────────────────────────────────────────────
 
-  const options = useMemo(() => modelOptions(catalog, configuredModel, 'generate'), [catalog, configuredModel]);
+  const options = useMemo(() => modelOptions(catalog ?? [], configuredModel, 'generate'), [catalog, configuredModel]);
   const option = options.find((o) => o.value === form.model) ?? null;
   const info = option?.info ?? null;
   const hints = placeholders(info);
-  const selected = history.find((e) => e.id === selectedId) ?? history[0] ?? null;
+  // F2: the limit trims what is shown, never what is stored — pruning storage
+  // itself happens only in addHistory (next result) and parseHistory (at load).
+  const visible = useMemo(() => history.slice(0, limit), [history, limit]);
+  const selected = visible.find((e) => e.id === selectedId) ?? visible[0] ?? null;
 
   const run = useCallback(async () => {
     setProblem(null);
@@ -207,19 +222,27 @@ function ImagesPanel({ ctx }: { ctx: PanelContext }) {
       setProblem({ message: built.error });
       return;
     }
+    // F8: guards the click itself, from here to the request settling, so a
+    // double-click cannot fire two requests before the first one answers.
+    setPending(true);
     try {
       setRunning(await client.generate(built.req));
     } catch (err: unknown) {
       fail(err);
+    } finally {
+      setPending(false);
     }
   }, [client, form, info, outDir, fail]);
 
   const cancel = useCallback(async () => {
     if (running === null) return;
+    setPending(true);
     try {
       await client.cancel(running.id);
     } catch (err: unknown) {
       fail(err);   // most likely 409: it finished while the click was in flight
+    } finally {
+      setPending(false);
     }
   }, [client, running, fail]);
 
@@ -235,8 +258,9 @@ function ImagesPanel({ ctx }: { ctx: PanelContext }) {
   }
 
   const busy = running !== null;
-  const missing = option?.missing ?? false;
-  const canRun = !busy && !missing && form.prompt.trim() !== '';
+  // F10: never call a model missing before the catalog has actually loaded.
+  const missing = catalog !== null && (option?.missing ?? false);
+  const canRun = !busy && !missing && !pending && form.prompt.trim() !== '';
 
   return (
     <div style={S.root}>
@@ -247,9 +271,17 @@ function ImagesPanel({ ctx }: { ctx: PanelContext }) {
             style={S.prompt}
             rows={3}
             placeholder="What to draw — ⌘↩ to generate"
+            autoFocus
             value={form.prompt}
             onChange={(e) => edit({ prompt: e.target.value })}
-            onKeyDown={(e) => { if (e.key === 'Enter' && e.metaKey && canRun) void run(); }}
+            onKeyDown={(e) => {
+              // F9: an IME composing an Enter (e.g. to commit kana/hanzi) must
+              // not also submit the form.
+              if (e.key === 'Enter' && e.metaKey && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                if (canRun) void run();
+              }
+            }}
           />
           {info?.negative === true && (
             <textarea
@@ -278,7 +310,11 @@ function ImagesPanel({ ctx }: { ctx: PanelContext }) {
                   inputMode="numeric"
                   placeholder="random"
                   value={form.seed}
-                  onChange={(e) => edit({ seed: e.target.value })}
+                  onChange={(e) => {
+                    // F1: typing a number locks it; clearing the field unlocks it.
+                    const v = e.target.value;
+                    edit({ seed: v, seedLocked: v.trim() !== '' });
+                  }}
                 />
                 <button
                   type="button"
@@ -292,7 +328,7 @@ function ImagesPanel({ ctx }: { ctx: PanelContext }) {
                   type="button"
                   style={form.seedLocked ? { ...S.iconButton, ...S.on } : S.iconButton}
                   title={form.seedLocked ? 'Seed locked: every run reuses it' : 'Seed unlocked: every run picks a new one'}
-                  onClick={() => edit({ seedLocked: !form.seedLocked })}
+                  onClick={() => setForm((f) => toggleLock(f))}
                 >
                   {form.seedLocked ? '🔒' : '🔓'}
                 </button>
@@ -307,7 +343,16 @@ function ImagesPanel({ ctx }: { ctx: PanelContext }) {
           )}
           <div style={S.actions}>
             {busy
-              ? <button type="button" style={S.button} onClick={() => void cancel()}>Cancel</button>
+              ? (
+                <button
+                  type="button"
+                  style={pending ? { ...S.button, ...S.disabled } : S.button}
+                  disabled={pending}
+                  onClick={() => void cancel()}
+                >
+                  Cancel
+                </button>
+              )
               : (
                 <button
                   type="button"
@@ -323,7 +368,7 @@ function ImagesPanel({ ctx }: { ctx: PanelContext }) {
           <Result entry={selected} />
         </div>
       </div>
-      <Strip entries={history} running={running} selectedId={selected?.id ?? null} onSelect={setSelectedId} />
+      <Strip entries={visible} running={running} selectedId={selected?.id ?? null} onSelect={setSelectedId} />
     </div>
   );
 }
@@ -383,21 +428,35 @@ function Strip({ entries, running, selectedId, onSelect }: {
     <div style={S.strip}>
       {running !== null && <div style={{ ...S.tile, ...S.pending }}>{runStatus(running.percent)}</div>}
       {entries.map((e) => (
-        <button
-          key={e.id}
-          type="button"
-          title={e.prompt ?? e.path}
-          style={e.id === selectedId ? { ...S.tile, ...S.selected } : S.tile}
-          onClick={() => onSelect(e.id)}
-        >
-          <img style={S.thumb} src={`data:image/jpeg;base64,${e.thumb_b64}`} alt="" />
-          <span style={S.tileLabel}>{shortModel(e.model)}</span>
-          <span style={S.tileLabel}>{e.seed}</span>
-        </button>
+        <Tile key={e.id} entry={e} selected={e.id === selectedId} onSelect={onSelect} />
       ))}
     </div>
   );
 }
+
+/**
+ * F6: memoized so a prompt keystroke or a poll tick — which change other state
+ * the strip's parent holds, not any entry — do not rebuild every tile's
+ * `data:` URL, about 200 of them at the default history limit.
+ */
+const Tile = memo(function Tile({ entry, selected, onSelect }: {
+  entry: HistoryEntry;
+  selected: boolean;
+  onSelect: (id: string) => void;
+}) {
+  return (
+    <button
+      type="button"
+      title={entry.prompt ?? entry.path}
+      style={selected ? { ...S.tile, ...S.selected } : S.tile}
+      onClick={() => onSelect(entry.id)}
+    >
+      <img style={S.thumb} src={`data:image/jpeg;base64,${entry.thumb_b64}`} alt="" />
+      <span style={S.tileLabel}>{shortModel(entry.model)}</span>
+      <span style={S.tileLabel}>{entry.seed}</span>
+    </button>
+  );
+});
 
 function Offline({ error, url, onRetry }: { error: DaemonError; url: string; onRetry: () => void }) {
   return (
@@ -627,7 +686,10 @@ export const plugin: Plugin = {
         outDir: typeof outDir === 'string' ? outDir : '',
       });
       if (!built.ok) {
-        await ctx.ui.notify(built.error, 'warn');
+        // F3: the palette invokes a command with no args at all, so "needs a
+        // prompt" is not a warning worth showing — it is just an empty form.
+        // Open the panel (its textarea autofocuses) instead of failing.
+        await ctx.workspace.openPanel(PANEL_ID);
         return;
       }
       const client = new ImageClient(

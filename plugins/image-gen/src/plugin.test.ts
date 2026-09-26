@@ -132,11 +132,12 @@ describe('imagegen.generate', () => {
     expect(nudged).toHaveBeenCalledTimes(1);
   });
 
-  it('says what is missing instead of posting when there is no prompt', async () => {
+  it('opens the panel instead of warning when the palette invokes it with no args', async () => {
     const h = host();
-    await h.invokeCommand('imagegen.generate', '   ');
+    await h.invokeCommand('imagegen.generate');
     expect(netFetch).not.toHaveBeenCalled();
-    expect(notify).toHaveBeenCalledWith('imagegen.generate needs a prompt.', 'warn');
+    expect(notify).not.toHaveBeenCalled();
+    expect(h.getActivePanelId()).toBe('imagegen.main');
   });
 
   it("shows the daemon's refusal and leaves the panel closed", async () => {
