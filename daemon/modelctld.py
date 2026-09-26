@@ -737,6 +737,24 @@ def h_image_models() -> dict:
     return {"models": imagegen.catalog(_local_repos())}
 
 
+def _catalog_repo(model: str) -> str:
+    """The repo `model` is keyed on for the per-repo busy rule (F8).
+
+    job.repo used to be the path string verbatim for a folder model, so
+    `modelctl mv` or `rm` of the repo it actually loads from -- a different
+    string -- could run under JobStore's per-repo lock while an image job was
+    still loading from that folder. A folder inside modelctl's own cache
+    layout (.../models--org--name/snapshots/...) is keyed on that repo
+    instead, closing the gap. A folder outside the cache, or a plain repo id,
+    is unaffected: there is no catalog entry to key it on.
+    """
+    if imagegen.is_path(model):
+        for part in Path(model).parts:
+            if part.startswith("models--"):
+                return mc.repo_for(part)
+    return model
+
+
 def h_image(mode: str, body: dict) -> dict:
     try:
         req = imagegen.build_request(
@@ -755,7 +773,7 @@ def h_image(mode: str, body: dict) -> dict:
     fd, out = tempfile.mkstemp(prefix="modelctld-image-", suffix=".json")
     os.close(fd)
     try:
-        job = start_job("image", req.model, [*imagegen.to_argv(req), f"--out={out}"],
+        job = start_job("image", _catalog_repo(req.model), [*imagegen.to_argv(req), f"--out={out}"],
                         script=IMAGE_PY, params=imagegen.params_of(req),
                         result_path=Path(out), exclusive_kind=True)
     except ApiError:

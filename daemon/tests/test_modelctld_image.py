@@ -105,6 +105,23 @@ class GenerateRouteTest(_ImageRoutes):
         self.assertEqual((job["repo"], repo), (str(folder), str(folder)))
         self.assertIn(f"--model={folder}", args)
 
+    def test_a_model_folder_inside_the_cache_is_keyed_on_its_catalog_repo(self) -> None:
+        # F8: job.repo used to be the raw path, so `modelctl mv` or `rm` of
+        # mflux-community/z-image-turbo-mflux-q8 (a different string) could
+        # run under the per-repo busy rule while an image job was still
+        # loading from this folder. --model= and the job's params still carry
+        # the path exactly as given -- only the busy-rule key changes.
+        d.mc.resolve = lambda repo, cfg=None: self.fail("a folder path is never looked up in the catalog")
+        folder = (self.tmp / "models--mflux-community--z-image-turbo-mflux-q8"
+                  / "snapshots" / "abc123")
+        folder.mkdir(parents=True)
+        job = d.h_image("generate", {"prompt": "x", "model": str(folder), "out_dir": str(self.tmp)})
+        _, repo, args, kw = self.started[0]
+        self.assertEqual(repo, "mflux-community/z-image-turbo-mflux-q8")
+        self.assertEqual(job["repo"], "mflux-community/z-image-turbo-mflux-q8")
+        self.assertIn(f"--model={folder}", args)
+        self.assertEqual(kw["params"]["model"], str(folder))
+
 
 class FileRouteTest(_ImageRoutes):
     def test_returns_the_full_image_as_base64(self) -> None:
