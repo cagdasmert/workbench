@@ -63,6 +63,16 @@ describe('parseHistory', () => {
     expect(parseHistory('x', 10)).toEqual([]);
     expect(parseHistory([good, { ...good, id: 'b', path: 5 }, { ...good, id: 'c', mode: 'draw' }], 10)).toEqual([good]);
   });
+
+  it('truncates to the limit, keeping the newest (F2)', () => {
+    const list = [entry('a', 1), entry('b', 2), entry('c', 3)];
+    expect(parseHistory(list, 2).map((e) => e.id)).toEqual(['c', 'b']);
+  });
+
+  it('re-sorts an unsorted list, newest first (F2)', () => {
+    const list = [entry('a', 1), entry('c', 3), entry('b', 2)];
+    expect(parseHistory(list, 10).map((e) => e.id)).toEqual(['c', 'b', 'a']);
+  });
 });
 
 describe('historyLimit', () => {
