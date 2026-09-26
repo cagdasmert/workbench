@@ -1139,8 +1139,34 @@ class Handler(BaseHTTPRequestHandler):
                 status=403,
                 hint="this daemon is for local tools, not web pages",
             )
-        if Handler.token and self.headers.get("X-Modelctl-Token") != Handler.token:
-            raise ApiError("bad or missing X-Modelctl-Token", status=401)
+        if Handler.token:
+            # The token already authenticates the caller, and --host other
+            # than loopback is only sensible with one -- so the Host check
+            # below is redundant here (F4's ruling).
+            if self.headers.get("X-Modelctl-Token") != Handler.token:
+                raise ApiError("bad or missing X-Modelctl-Token", status=401)
+            return
+        self._guard_host()
+
+    def _guard_host(self) -> None:
+        """Refuse anything but a loopback Host, against DNS rebinding.
+
+        Origin and Referer are what a browser adds and Electron's main process
+        does not (see the module docstring) -- but after a DNS rebind, a
+        page's same-origin GET carries neither. Host still names the domain
+        the browser thinks it is talking to, and a rebind cannot forge that to
+        anything but the domain that resolved to this address.
+        """
+        port = self.server.server_address[1]
+        allowed = {f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}"}
+        host = self.headers.get("Host")
+        if host not in allowed:
+            raise ApiError(
+                f"Host {host!r} is not one this daemon accepts",
+                status=403,
+                hint=(f"send Host: 127.0.0.1:{port} or localhost:{port} -- this guards "
+                      "against DNS rebinding. Configure --token if you need a non-loopback --host"),
+            )
 
     def _read_body(self) -> dict:
         length = int(self.headers.get("Content-Length") or 0)
