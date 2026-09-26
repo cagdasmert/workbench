@@ -162,6 +162,15 @@ class RequestTest(unittest.TestCase):
             image.build_request("edit", out_dir=self.out, source="/tmp/wall\x00.png", instruction="x")
         self.assertIn("NUL", str(cm.exception))
 
+    def test_an_unknown_users_tilde_path_is_an_imageerror_not_a_runtimeerror(self) -> None:
+        # F7: Path.expanduser() raises RuntimeError for an unknown user, which
+        # would otherwise reach modelctld's dispatch as an opaque 500.
+        with self.assertRaises(image.ImageError) as cm:
+            image.build_request("edit", out_dir=self.out, source="~nonexistentuser12345/x", instruction="x")
+        self.assertIn("cannot expand", str(cm.exception))
+        with self.assertRaises(image.ImageError):
+            image.resolve_out_dir("~nonexistentuser12345/x")
+
 
 class SizeTest(unittest.TestCase):
     def test_fit_area_keeps_aspect_at_one_megapixel_in_multiples_of_16(self) -> None:
@@ -214,6 +223,13 @@ class ModelPathTest(unittest.TestCase):
         with mock.patch.dict(os.environ, {"HOME": str(self.tmp)}):
             req = image.build_request("upscale", model="~/seedvr2-3b", out_dir=self.out, source=str(src))
         self.assertEqual(req.model, str(self.tmp / "seedvr2-3b"))
+
+    def test_an_unknown_users_tilde_model_path_is_an_imageerror(self) -> None:
+        # F7: expand_path (used here for the model-folder branch too) turns
+        # Path.expanduser()'s RuntimeError into an ImageError.
+        with self.assertRaises(image.ImageError) as cm:
+            image.build_request("generate", model="~nonexistentuser12345/z-image-turbo", out_dir=self.out, prompt="x")
+        self.assertIn("cannot expand", str(cm.exception))
 
     def test_a_missing_folder_is_refused(self) -> None:
         with self.assertRaises(image.ImageError) as cm:

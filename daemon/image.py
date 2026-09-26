@@ -184,10 +184,17 @@ def expand_path(raw: str) -> Path:
     Refuses a NUL byte (F1): left unchecked, it reaches Popen's argv as
     `ValueError: embedded null byte`, which wedges the job in 'running'
     instead of failing the request that caused it.
+
+    Path.expanduser() raises RuntimeError for an unknown user (F7), which
+    would otherwise reach modelctld's dispatch as an opaque 500; that becomes
+    an ImageError here too, so every path input refuses the same way.
     """
     if "\x00" in raw:
         raise ImageError(f"path must not contain a NUL byte, got {raw!r}")
-    return Path(raw).expanduser()
+    try:
+        return Path(raw).expanduser()
+    except RuntimeError:
+        raise ImageError(f"cannot expand {raw!r}") from None
 
 
 def resolve_out_dir(raw: object) -> Path:

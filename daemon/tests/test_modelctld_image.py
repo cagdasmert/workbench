@@ -143,6 +143,12 @@ class FileRouteTest(_ImageRoutes):
         self.assertEqual(cm.exception.status, 403)
         self.assertIn("Privacy & Security", cm.exception.hint or "")
 
+    def test_an_unknown_users_tilde_path_is_400_not_500(self) -> None:
+        # F7: Path.expanduser()'s RuntimeError, via imagegen.expand_path.
+        with self.assertRaises(d.ApiError) as cm:
+            d.h_image_file({"path": ["~nonexistentuser12345/x.png"]})
+        self.assertEqual(cm.exception.status, 400)
+
 
 class SaveRouteTest(_ImageRoutes):
     def setUp(self) -> None:
@@ -165,7 +171,10 @@ class SaveRouteTest(_ImageRoutes):
                              ({"path": str(self.tmp / "a.gif"), "dir": str(self.dest)}, 400),
                              ({"path": str(self.tmp / "gone.png"), "dir": str(self.dest)}, 404),
                              ({"path": str(self.src), "dir": str(self.dest) + "\x00"}, 400),
-                             ({"path": str(self.src) + "\x00", "dir": str(self.dest)}, 400)):
+                             ({"path": str(self.src) + "\x00", "dir": str(self.dest)}, 400),
+                             # F7: Path.expanduser()'s RuntimeError for an unknown user.
+                             ({"path": "~nonexistentuser12345/x.png", "dir": str(self.dest)}, 400),
+                             ({"path": str(self.src), "dir": "~nonexistentuser12345/x"}, 400)):
             with self.subTest(body=body), self.assertRaises(d.ApiError) as cm:
                 d.h_image_save(body)
             self.assertEqual(cm.exception.status, status)
