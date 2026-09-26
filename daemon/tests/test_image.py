@@ -174,6 +174,19 @@ class SizeTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(image.image_size(_png(Path(tmp) / "a.png", 33, 17)), (33, 17))
 
+    def test_image_size_follows_exif_orientation(self) -> None:
+        # F3: mflux opens edit/upscale sources with their EXIF orientation
+        # applied, so a portrait phone JPEG stored 4032x3024 with Orientation 6
+        # is really 3024x4032 -- image_size must agree, or fit_area sizes the
+        # edit for the wrong aspect ratio.
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "portrait.jpg"
+            exif = Image.Exif()
+            exif[0x0112] = 6
+            Image.new("RGB", (4032, 3024), (1, 2, 3)).save(p, exif=exif)
+            self.assertEqual(image.image_size(p), (3024, 4032))
+            self.assertEqual(image.fit_area(*image.image_size(p)), (880, 1168))
+
 
 class ModelPathTest(unittest.TestCase):
     def setUp(self) -> None:

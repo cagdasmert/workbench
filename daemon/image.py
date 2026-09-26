@@ -301,15 +301,30 @@ def validate_source(raw: object) -> Path:
     return p
 
 
+_EXIF_ORIENTATION = 0x0112
+_EXIF_SWAPS_AXES = (5, 6, 7, 8)   # a 90-degree rotation, mirrored or not
+
+
 def image_size(path: Path) -> tuple[int, int]:
-    """(width, height) from the file header. Pillow does not decode pixels for this."""
+    """(width, height) from the file header, after EXIF orientation.
+
+    Pillow does not decode pixels for this. mflux opens edit and upscale
+    sources with their EXIF orientation applied (its own `oriented_size`), so
+    a portrait phone JPEG stored 4032x3024 with Orientation 6 is really
+    3024x4032 -- an orientation of 5, 6, 7 or 8 rotates 90 degrees and swaps
+    width and height.
+    """
     from PIL import Image, UnidentifiedImageError
 
     try:
         with Image.open(path) as im:
-            return im.size
+            width, height = im.size
+            orientation = im.getexif().get(_EXIF_ORIENTATION, 1)
     except (UnidentifiedImageError, OSError) as e:
         raise ImageError(f"{path.name} is not a readable image ({e})") from None
+    if orientation in _EXIF_SWAPS_AXES:
+        return height, width
+    return width, height
 
 
 def _down(value: float) -> int:
