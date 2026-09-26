@@ -2102,7 +2102,8 @@ BODY='{"prompt":"a green wooden garden gate set in an old stone wall, morning li
 J1=$(curl -s -X POST localhost:8078/v1/generate/image -H 'content-type: application/json' -d "$BODY")
 ID1=$(echo "$J1" | $PY -c 'import json,sys; print(json.load(sys.stdin)["id"])'); echo "job $ID1"
 curl -s localhost:8078/v1/jobs/$ID1 | $PY -c 'import json,sys; j=json.load(sys.stdin); print("while loading: percent =", j["percent"], "| last:", j["log"][-1:])'
-curl -s -X POST localhost:8078/v1/generate/image -H 'content-type: application/json' -d "$BODY"; echo
+$PY -c 'from PIL import Image; import sys; Image.new("RGB", (256, 256), (10, 20, 30)).save(sys.argv[1])' "$G/probe.png"
+curl -s -w ' %{http_code}\n' -X POST localhost:8078/v1/generate/image/upscale -H 'content-type: application/json' -d '{"path":"'"$G"'/probe.png","out_dir":"'"$G"'"}'
 while [ "$(curl -s localhost:8078/v1/jobs/$ID1 | $PY -c 'import json,sys; print(json.load(sys.stdin)["state"])')" = running ]; do sleep 3; done
 curl -s localhost:8078/v1/jobs/$ID1 > "$G/job1.json"
 $PY -c 'import json,sys; j=json.load(open(sys.argv[1])); r=j["result"] or {}; print(j["state"], j["error"]); print({k: r.get(k) for k in ("path","steps","seed","width","height","load_s","gen_s","peak_gb")}); print("\n".join(l for l in j["log"] if l.startswith(("loading","generating","step 1/","step 9/","done"))))' "$G/job1.json"
@@ -2110,7 +2111,12 @@ $PY -c 'import json,sys; j=json.load(open(sys.argv[1])); r=j["result"] or {}; pr
 
 Expected:
 - `while loading: percent = None`.
-- The second POST returns `{"error": "another image job is running (mflux-community/z-image-turbo-mflux-q8)", "hint": "one image job at a time -- poll /v1/jobs/<ID1>…"}`. Its status is 409, but the `curl` above does not print it; add `-w '%{http_code}'` to see it.
+- The second request is an **upscale** of the small PNG just created with PIL (its default model is
+  `numz/SeedVR2_comfyUI`, a different repo from the running generate job's `mflux-community/z-image-turbo-mflux-q8`).
+  Sending the *same* model here, as an identical second `generate` POST would, only exercises the same-repo 409
+  ("… already has a running image job") -- the point of this step is the **cross-model** one:
+  `{"error": "another image job is running (mflux-community/z-image-turbo-mflux-q8)", "hint": "one image job at a
+  time -- poll /v1/jobs/<ID1>…"}`, status **409** (the `-w '%{http_code}'` above prints it).
 - `done None`, `steps: 9`, `seed: 1234`, `1024x1024`, and numbers for `load_s`, `gen_s` and `peak_gb`.
 - In the log: `loading …`, `generating  0%`, `step 1/9  11%`, `step 9/9  100%`, `done: …`.
 
