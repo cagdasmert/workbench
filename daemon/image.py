@@ -255,10 +255,17 @@ def save_png(image: Any, directory: Path, filename: str, meta: dict[str, Any]) -
 
 
 def copy_new(source: Path, directory: Path) -> Path:
-    """Copy `source` into `directory` under its own name, never overwriting."""
-    path, f = open_new(directory, source.name)
-    with f, source.open("rb") as src:
-        shutil.copyfileobj(src, f)
+    """Copy `source` into `directory` under its own name, never overwriting.
+
+    The source is opened first, before the destination is created: an
+    unreadable source (permission denied, say) then leaves nothing behind,
+    rather than the empty file open_new's exclusive create would otherwise
+    have already made.
+    """
+    with source.open("rb") as src:
+        path, f = open_new(directory, source.name)
+        with f:
+            shutil.copyfileobj(src, f)
     return path
 
 

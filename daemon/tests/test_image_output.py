@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import os
 import tempfile
 import unittest
 from datetime import datetime
@@ -127,6 +128,24 @@ class SavePngTest(_TmpDirs):
         first, second = image.copy_new(src, dest), image.copy_new(src, dest)
         self.assertEqual((first.name, second.name), ("src.png", "src-2.png"))
         self.assertEqual(second.read_bytes(), b"\x89PNG-bytes")
+
+    @unittest.skipIf(os.getuid() == 0, "chmod 000 has no effect for root")
+    def test_copy_new_leaves_nothing_when_the_source_is_unreadable(self) -> None:
+        # F6: copy_new used to create the destination (open_new's exclusive
+        # create) before ever opening the source, so an unreadable source left
+        # an empty file behind. Opening the source first means a failure here
+        # leaves the destination folder untouched.
+        src = self.tmp / "secret.png"
+        src.write_bytes(b"\x89PNG-bytes")
+        src.chmod(0o000)
+        dest = self.tmp / "dest"
+        dest.mkdir()
+        try:
+            with self.assertRaises(PermissionError):
+                image.copy_new(src, dest)
+        finally:
+            src.chmod(0o644)
+        self.assertEqual(list(dest.iterdir()), [])
 
     def test_preview_is_a_jpeg_no_larger_than_512(self) -> None:
         b64 = image.preview_b64(Image.new("RGB", (2000, 1000)))

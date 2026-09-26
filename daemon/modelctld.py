@@ -708,6 +708,21 @@ def h_text(body: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 
+# macOS silently denies reads under its privacy protection (TCC) with a plain
+# PermissionError, indistinguishable from a real permissions problem -- so the
+# hint names both fixes rather than guessing which one applies.
+_PERMISSION_HINT = ("macOS may be blocking this folder -- allow the app running modelctl under "
+                    "System Settings → Privacy & Security → Files and Folders "
+                    "(or Full Disk Access)")
+
+
+def _raise_for_os_error(e: OSError) -> None:
+    """F6: an OSError while reading or copying an image is the client's problem, not a 500."""
+    if isinstance(e, PermissionError):
+        raise ApiError(str(e), status=403, hint=_PERMISSION_HINT) from None
+    raise ApiError(str(e)) from None
+
+
 def _local_repos() -> list[str]:
     """Every repo folder on a mounted root. Folder presence is what `ls` calls downloaded."""
     repos: list[str] = []
@@ -767,7 +782,11 @@ def h_image_file(q: dict) -> dict:
     if size > IMAGE_FILE_MAX:
         raise ApiError(f"{path.name} is {size / 2**20:.0f} MB; the limit is "
                        f"{IMAGE_FILE_MAX // 2**20} MB", status=413)
-    return {"path": str(path), "type": kind, "b64": base64.b64encode(path.read_bytes()).decode("ascii")}
+    try:
+        data = path.read_bytes()
+    except OSError as e:
+        _raise_for_os_error(e)
+    return {"path": str(path), "type": kind, "b64": base64.b64encode(data).decode("ascii")}
 
 
 def h_image_save(body: dict) -> dict:
@@ -791,6 +810,8 @@ def h_image_save(body: dict) -> dict:
         written = imagegen.copy_new(source, folder)
     except imagegen.ImageError as e:
         raise ApiError(str(e)) from None
+    except OSError as e:
+        _raise_for_os_error(e)
     return {"path": str(written)}
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -128,6 +129,20 @@ class FileRouteTest(_ImageRoutes):
         finally:
             d.IMAGE_FILE_MAX = d_max
 
+    @unittest.skipIf(os.getuid() == 0, "chmod 000 has no effect for root")
+    def test_an_unreadable_file_is_403_with_the_privacy_hint(self) -> None:
+        # F6: a PermissionError from read_bytes() used to reach _dispatch's
+        # catch-all and come back as an opaque 500.
+        secret = _png(self.tmp / "secret.png", 8, 8)
+        secret.chmod(0o000)
+        try:
+            with self.assertRaises(d.ApiError) as cm:
+                d.h_image_file({"path": [str(secret)]})
+        finally:
+            secret.chmod(0o644)
+        self.assertEqual(cm.exception.status, 403)
+        self.assertIn("Privacy & Security", cm.exception.hint or "")
+
 
 class SaveRouteTest(_ImageRoutes):
     def setUp(self) -> None:
@@ -154,6 +169,21 @@ class SaveRouteTest(_ImageRoutes):
             with self.subTest(body=body), self.assertRaises(d.ApiError) as cm:
                 d.h_image_save(body)
             self.assertEqual(cm.exception.status, status)
+        self.assertEqual(list(self.dest.iterdir()), [])
+
+    @unittest.skipIf(os.getuid() == 0, "chmod 000 has no effect for root")
+    def test_an_unreadable_source_is_403_and_leaves_no_file_behind(self) -> None:
+        # F6: PermissionError from copy_new used to reach _dispatch's
+        # catch-all (a 500), and open_new's exclusive create ran before the
+        # source was even opened, leaving an empty file in dest.
+        self.src.chmod(0o000)
+        try:
+            with self.assertRaises(d.ApiError) as cm:
+                d.h_image_save({"path": str(self.src), "dir": str(self.dest)})
+        finally:
+            self.src.chmod(0o644)
+        self.assertEqual(cm.exception.status, 403)
+        self.assertIn("Privacy & Security", cm.exception.hint or "")
         self.assertEqual(list(self.dest.iterdir()), [])
 
 
