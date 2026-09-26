@@ -58,8 +58,8 @@ export interface AsrJob {
 
 export const DEFAULT_DAEMON_URL = 'http://127.0.0.1:8077';
 
-/** The words every "can't reach it" message needs. Two lines: it is shown in a narrow box. */
-export const START_COMMAND = 'cd ~/work/tools/huggingface\n.venv/bin/python modelctl.py serve';
+/** What starts the daemon: the `modelctl` shim runs daemon/modelctl.py with the venv's Python. */
+export const START_COMMAND = 'modelctl serve';
 
 /**
  * Why a request failed, as the one fact the panel branches on. Only `offline`
