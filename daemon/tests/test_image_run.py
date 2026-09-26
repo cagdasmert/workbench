@@ -109,6 +109,22 @@ class RunTest(unittest.TestCase):
         self.assertEqual(call["num_inference_steps"], 20)
         self.assertEqual((result["instruction"], result["source"]), ("natural stone", str(src)))
 
+    def test_klein_9b_calls_generate_image_without_the_singular_image_path(self) -> None:
+        # F11: flux2-klein-9b's generate_image takes image_paths only, unlike
+        # qwen-image-edit's, which also wants the singular image_path -- the
+        # _generate branch that handles every other edit family must not send
+        # it a keyword its signature doesn't have.
+        src = self.tmp / "wall.png"
+        Image.new("RGB", (512, 512)).save(src)
+        req = image.build_request("edit", out_dir=str(self.tmp), source=str(src),
+                                  instruction="natural stone",
+                                  model="mflux-community/flux2-klein-9b-mflux-q8")
+        self._run(req)
+        call = self.model.calls[0]
+        self.assertEqual((call["guidance"], call["num_inference_steps"], call["image_paths"]),
+                         (1.0, 4, [str(src)]))
+        self.assertNotIn("image_path", call)
+
     def test_upscale_passes_the_factor_to_mflux(self) -> None:
         src = self.tmp / "small.png"
         Image.new("RGB", (320, 240)).save(src)
