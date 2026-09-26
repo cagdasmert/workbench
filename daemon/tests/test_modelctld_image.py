@@ -95,6 +95,15 @@ class GenerateRouteTest(_ImageRoutes):
         rows = d.h_image_models()["models"]
         self.assertEqual([(r["repo"], r["role"]) for r in rows], [(imagegen.DEFAULT_MODEL, "generate")])
 
+    def test_a_model_folder_runs_without_a_catalog_lookup(self) -> None:
+        d.mc.resolve = lambda repo, cfg=None: self.fail("a folder path is never looked up in the catalog")
+        folder = self.tmp / "z-image-turbo-q8"
+        folder.mkdir()
+        job = d.h_image("generate", {"prompt": "x", "model": str(folder), "out_dir": str(self.tmp)})
+        _, repo, args, _ = self.started[0]
+        self.assertEqual((job["repo"], repo), (str(folder), str(folder)))
+        self.assertIn(f"--model={folder}", args)
+
 
 class FileRouteTest(_ImageRoutes):
     def test_returns_the_full_image_as_base64(self) -> None:

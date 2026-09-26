@@ -117,6 +117,23 @@ def pull_command(repo: str) -> str:
     return f"modelctl pull {repo}"
 
 
+def is_path(model: str) -> bool:
+    """A model given as a folder, rather than as a repo id for modelctl to find."""
+    return model.startswith(("/", "~"))
+
+
+def model_dir(model: str, resolve: Callable[[str], str | None]) -> Path | None:
+    """The folder to load `model` from.
+
+    A folder path is used as given. A repo id is wherever modelctl keeps it
+    (`resolve`), or None when it has not been pulled.
+    """
+    if is_path(model):
+        return Path(model)
+    found = resolve(model)
+    return None if found is None else Path(found)
+
+
 # ---------------------------------------------------------------------------
 # output files
 # ---------------------------------------------------------------------------
@@ -344,7 +361,12 @@ def build_request(mode: str, *, model: object = None, out_dir: object = None,
     if mode not in ROLES:
         raise ImageError(f"mode must be one of {', '.join(ROLES)}, got {mode!r}")
     repo = _text("model", model, required=False) or DEFAULTS[mode]
-    family = family_for(repo, mode)
+    if is_path(repo):
+        folder = Path(repo).expanduser()
+        if not folder.is_absolute() or not folder.is_dir():
+            raise ImageError(f"model folder {repo!r} does not exist")
+        repo = str(folder)
+    family = family_for(repo, mode)   # a folder's path must name its family, as modelctl's layout does
     seed_v = _opt_int("seed", seed, 0, MAX_SEED) or None
 
     if mode == "upscale":
@@ -584,10 +606,10 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         req = request_from_args(args)
-        model_dir = mc.resolve(req.model)
-        if model_dir is None:
+        folder = model_dir(req.model, mc.resolve)
+        if folder is None:
             raise ImageError(f"{req.model} is not downloaded. Fetch it with: {pull_command(req.model)}")
-        result = run(req, Path(model_dir), out=say)
+        result = run(req, folder, out=say)
     except ImageError as e:
         # modelctld reports a failed job's last line verbatim, so this line is the error the user sees.
         print(f"error: {e}", file=sys.stderr, flush=True)

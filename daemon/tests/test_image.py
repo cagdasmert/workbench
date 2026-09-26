@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from PIL import Image
 
@@ -155,6 +157,56 @@ class SizeTest(unittest.TestCase):
     def test_image_size_reads_the_header(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(image.image_size(_png(Path(tmp) / "a.png", 33, 17)), (33, 17))
+
+
+class ModelPathTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self._orig = (image.DEFAULT_OUT_DIR, image.DENIED_WRITE_ROOTS)
+        image.DEFAULT_OUT_DIR = self.tmp / "Pictures"
+        image.DENIED_WRITE_ROOTS = (self.tmp / "plugins",)
+        self.out = str(self.tmp)
+
+    def tearDown(self) -> None:
+        image.DEFAULT_OUT_DIR, image.DENIED_WRITE_ROOTS = self._orig
+        self._tmp.cleanup()
+
+    def test_a_folder_whose_path_names_the_family_is_used_as_given(self) -> None:
+        folder = self.tmp / "models--mflux-community--z-image-turbo-mflux-q8" / "snapshots" / "abc"
+        folder.mkdir(parents=True)
+        req = image.build_request("generate", model=str(folder), out_dir=self.out, prompt="x")
+        self.assertEqual(req.model, str(folder))
+        self.assertEqual(image.model_dir(req.model, lambda repo: self.fail("a path is never looked up")), folder)
+
+    def test_tilde_is_expanded(self) -> None:
+        (self.tmp / "seedvr2-3b").mkdir()
+        src = _png(self.tmp / "small.png", 100, 100)
+        with mock.patch.dict(os.environ, {"HOME": str(self.tmp)}):
+            req = image.build_request("upscale", model="~/seedvr2-3b", out_dir=self.out, source=str(src))
+        self.assertEqual(req.model, str(self.tmp / "seedvr2-3b"))
+
+    def test_a_missing_folder_is_refused(self) -> None:
+        with self.assertRaises(image.ImageError) as cm:
+            image.build_request("generate", model=str(self.tmp / "z-image-turbo-gone"), out_dir=self.out, prompt="x")
+        self.assertIn("does not exist", str(cm.exception))
+
+    def test_a_folder_that_names_no_family_is_refused_listing_the_names(self) -> None:
+        (self.tmp / "my-model").mkdir()
+        with self.assertRaises(image.ImageError) as cm:
+            image.build_request("generate", model=str(self.tmp / "my-model"), out_dir=self.out, prompt="x")
+        self.assertIn("z-image-turbo", str(cm.exception))
+
+    def test_a_repo_id_is_looked_up(self) -> None:
+        self.assertEqual(image.model_dir(image.DEFAULT_MODEL, lambda repo: f"/snap/{repo}"),
+                         Path(f"/snap/{image.DEFAULT_MODEL}"))
+        self.assertIsNone(image.model_dir(image.DEFAULT_MODEL, lambda repo: None))
+
+    def test_a_folder_model_round_trips_through_argv(self) -> None:
+        folder = self.tmp / "z-image-turbo"
+        folder.mkdir()
+        req = image.build_request("generate", model=str(folder), out_dir=self.out, prompt="x")
+        self.assertEqual(image.request_from_args(image.build_parser().parse_args(image.to_argv(req))), req)
 
 
 if __name__ == "__main__":

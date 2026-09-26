@@ -729,7 +729,7 @@ def h_image(mode: str, body: dict) -> dict:
         )
     except imagegen.ImageError as e:
         raise ApiError(str(e)) from None
-    if mc.resolve(req.model, cfg=_cfg()) is None:
+    if imagegen.model_dir(req.model, lambda repo: mc.resolve(repo, cfg=_cfg())) is None:
         raise ApiError(f"{req.model} is not downloaded", status=404,
                        hint=imagegen.pull_command(req.model))
 
