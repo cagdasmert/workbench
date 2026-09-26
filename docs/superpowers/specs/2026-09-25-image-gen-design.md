@@ -96,14 +96,29 @@ The daemon moved into the repo as this branch's first commit (`6308694`); see
    deferred, as it was in transcribe. The conflict check and the job's registration happen under
    one lock (`JobStore.claim`). That closes the gap the existing `running_for`-then-`add` pair
    left, where two requests arriving together could both pass.
+   *(Amended 2026-09-26, final-review F8: when the model is given as a folder path that lies
+   inside modelctl's own cache layout — `.../models--org--name/snapshots/...` — the job is keyed
+   on that catalog repo, not the raw path string. Otherwise the per-repo rule missed it: `job.repo`
+   was the path verbatim, a different string from the repo `modelctl mv` or `rm` takes, so a
+   mutation of the repo the folder actually belongs to could run while an image job was still
+   loading from it. `--model=` and the job's params still carry the path exactly as given; only
+   the busy-rule key changes.)*
 9. **`out_dir`** comes from the plugin's `outputDir` setting. When the setting is empty, the
    daemon writes to `~/Pictures/Workbench` and creates the folder. An explicit `out_dir` must be
    an existing absolute directory, otherwise it is a 400, so a typo in settings cannot create a
    stray folder.
-10. **The daemon's writes stay out of the Workbench plugin directory.** `out_dir` and the
-    `/save` destination both refuse `~/Library/Application Support/Workbench/plugins/` and
-    everything under it, mirroring the broker's deny-list (CLAUDE.md, "Watch for"). Only image
-    files are ever written, always with exclusive create.
+10. **The daemon's writes stay out of Workbench's whole application-data folder.** `out_dir` and
+    the `/save` destination both refuse `~/Library/Application Support/Workbench/` and everything
+    under it — not only `plugins/` — mirroring the broker's one deny-list entry for it
+    (`fs-grants.ts`; CLAUDE.md, "Watch for"). Only image files are ever written, always with
+    exclusive create.
+    *(Amended 2026-09-26, final-review F2 and F9: the comparison is by file identity — the
+    denied roots' `(st_dev, st_ino)`, walked up from the target through its resolved parents — not
+    by comparing resolved path strings, because the macOS volume is case-insensitive and a string
+    comparison let a different-case spelling of the root (`.../PLUGINS/x`) through even though it
+    names the same folder on disk. And the denied root widened from `.../Workbench/plugins/` to
+    all of `.../Workbench/`, since settings and other app state live in siblings of `plugins/` and
+    the broker denies the whole folder in one entry, not just that subfolder.)*
 11. **Sources are PNG, JPEG or WebP.** HEIC is refused with a hint to convert it first (`sips -s
     format jpeg in.heic --out out.jpg`). That keeps `pillow-heif` out until a real photo needs
     it.
@@ -160,6 +175,11 @@ The daemon moved into the repo as this branch's first commit (`6308694`); see
     - **Edit:** the output keeps the source's aspect ratio at no more than one megapixel, with
       both sides multiples of 16. A 12 MP phone photo edited at full size would not fit in
       memory, and these models work at about 1 MP anyway.
+      *(Amended 2026-09-26, final-review F3: the source's aspect ratio follows its EXIF
+      orientation, not its stored pixel size — mflux opens edit and upscale sources with
+      orientation applied, so a portrait phone JPEG stored 4032×3024 with Orientation 6 is really
+      3024×4032. `image_size` reads `getexif().get(0x0112, 1)` and swaps width and height for
+      orientations 5–8, matching mflux's own `oriented_size`.)*
     - **Steps:** 1–100. A value of 0 means "use the default", as the plugin's command args
       define it; the same holds for seed 0, which means "random".
 24. **`image.py` runs mflux the way mflux's own command-line tools do.** It registers mflux's
@@ -168,6 +188,17 @@ The daemon moved into the repo as this branch's first commit (`6308694`); see
     stored. `HF_HUB_OFFLINE=1` makes any download mflux attempts fail rather than bypass
     modelctl. `TQDM_DISABLE=1` removes mflux's progress bars, so the `%` lines in the log are
     only `image.py`'s own. mflux is pinned to `0.20.0`.
+25. **The daemon refuses a non-loopback `Host`, against DNS rebinding.** *(Added 2026-09-26,
+    final-review F4.)* `Origin` and `Referer` are what a browser adds and what Electron's main
+    process does not — but after a DNS rebind, a page's same-origin GET carries neither, and it
+    would otherwise sail through to routes like `GET /v1/generate/image/file` and read any image
+    on disk. `Handler._guard` now also checks `Host` when no `--token` is configured: only
+    `127.0.0.1:<port>`, `localhost:<port>` or `[::1]:<port>` (the server's own bound port) are
+    accepted, and anything else, or a missing `Host`, is a 403 naming the fix. The check is
+    skipped once a token is set — the token already authenticates the caller, and `--host` other
+    than loopback only makes sense with one. This is a daemon-wide change, not specific to
+    `/v1/generate/image`: Workbench's `net.fetch` and `curl` both send `Host: 127.0.0.1:8077` or
+    `localhost:8077` already, so neither is affected.
 
 ## Wire contract
 
