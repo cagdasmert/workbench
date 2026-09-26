@@ -13,6 +13,21 @@ from PIL import Image
 import image
 
 
+def _tmp_volume_is_case_insensitive() -> bool:
+    """True when tempfile's default folder is on a case-insensitive volume (normal macOS/APFS)."""
+    with tempfile.TemporaryDirectory() as d:
+        probe = Path(d) / "CaseProbe"
+        probe.write_text("x")
+        swapped = Path(d) / "caseprobe"
+        try:
+            return swapped.stat().st_ino == probe.stat().st_ino
+        except OSError:
+            return False
+
+
+_CASE_INSENSITIVE_VOLUME = _tmp_volume_is_case_insensitive()
+
+
 class _TmpDirs(unittest.TestCase):
     """Point the default output folder and the deny-list into a temp dir."""
 
@@ -49,6 +64,17 @@ class OutDirTest(_TmpDirs):
             with self.subTest(raw=raw), self.assertRaises(image.ImageError) as cm:
                 image.resolve_out_dir(raw)
             self.assertIn("plugin folder", str(cm.exception))
+
+    @unittest.skipUnless(_CASE_INSENSITIVE_VOLUME, "temp volume is case-sensitive")
+    def test_a_differently_cased_spelling_of_the_root_is_still_denied(self) -> None:
+        # F2: the macOS volume is case-insensitive, but Path.resolve() keeps the
+        # caller's own spelling and the old check compared strings -- so
+        # .../PLUGINS/x got through even though it is the same folder on disk.
+        (self.tmp / "plugins").mkdir()
+        swapped = self.tmp / "PLUGINS"
+        with self.assertRaises(image.ImageError) as cm:
+            image.resolve_out_dir(str(swapped))
+        self.assertIn("plugin folder", str(cm.exception))
 
 
 class OpenNewTest(_TmpDirs):

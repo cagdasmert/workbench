@@ -152,13 +152,28 @@ DENIED_WRITE_ROOTS: tuple[Path, ...] = (
 def write_denied(directory: Path) -> str | None:
     """Why `directory` must not be written to, or None.
 
-    Both sides are resolved first, so a symlink that leads into the plugin
-    folder is caught as well as the folder itself.
+    Compared by file identity (device and inode), not by spelling: the macOS
+    volume is case-insensitive, so a string comparison lets a different-case
+    path through (.../PLUGINS/x) even though it is the same folder on disk.
+    `directory` is resolved and walked up through its parents, so a symlink
+    that leads into a denied root is caught as well as the root itself.
     """
-    real = directory.resolve()
+    denied_ids: set[tuple[int, int]] = set()
     for root in DENIED_WRITE_ROOTS:
-        denied = root.resolve()
-        if real == denied or real.is_relative_to(denied):
+        try:
+            st = root.stat()
+        except OSError:
+            continue   # doesn't exist yet, so it cannot contain an existing folder
+        denied_ids.add((st.st_dev, st.st_ino))
+    if not denied_ids:
+        return None
+    real = directory.resolve()
+    for candidate in (real, *real.parents):
+        try:
+            st = candidate.stat()
+        except OSError:
+            continue
+        if (st.st_dev, st.st_ino) in denied_ids:
             return f"{directory} is inside Workbench's plugin folder, which is never written to"
     return None
 
