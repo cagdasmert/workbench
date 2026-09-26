@@ -550,8 +550,11 @@ class Progress:
 
 
 def load_model(family: Family, model_dir: Path) -> Any:
-    """The mflux model for `family`, from a local snapshot that modelctl resolved.
+    """The mflux model for `family`, from `model_dir` on disk.
 
+    `model_dir` is either a local snapshot that modelctl resolved from a repo
+    id, or a folder the user gave directly (decision 5) -- either way it is
+    used as `model_path` exactly as given, and mflux never downloads anything.
     `quantize` is left unset, so pre-quantized weights (the mflux-community
     repos) load at the bits they were saved with. MemorySaver is what mflux's
     own CLI always registers: it evicts the text encoders once the prompt is
