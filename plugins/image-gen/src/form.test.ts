@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { ImageModel } from './client.js';
 import {
   afterRun, commandRequest, DEFAULT_GENERATE_MODEL, emptyForm, MAX_SEED, modelOptions, placeholders,
-  rollSeed, runStatus, toGenerateRequest, type GenerateForm,
+  rollSeed, runStatus, toGenerateRequest, toggleLock, type GenerateForm,
 } from './form.js';
 
 const Z: ImageModel = {
@@ -96,9 +96,24 @@ describe('seed, placeholders and status', () => {
     expect(rollSeed(() => 0.999_999_999)).toBeLessThanOrEqual(MAX_SEED);
   });
 
-  it('shows the seed a run used when the seed is unlocked, and keeps a locked one', () => {
+  it('writes the used seed on an unlocked form', () => {
     expect(afterRun(form({ seed: '' }), 42).seed).toBe('42');
-    expect(afterRun(form({ seed: '7', seedLocked: true }), 42).seed).toBe('7');
+  });
+
+  it('overwrites a locked field that is not a positive whole number, but stays locked', () => {
+    expect(afterRun(form({ seed: '', seedLocked: true }), 42)).toEqual(
+      expect.objectContaining({ seed: '42', seedLocked: true }),
+    );
+    // A locked '0' counts as not valid, so it is overwritten too.
+    expect(afterRun(form({ seed: '0', seedLocked: true }), 42)).toEqual(
+      expect.objectContaining({ seed: '42', seedLocked: true }),
+    );
+  });
+
+  it('keeps a locked field that is a positive whole number', () => {
+    expect(afterRun(form({ seed: '7', seedLocked: true }), 42)).toEqual(
+      expect.objectContaining({ seed: '7', seedLocked: true }),
+    );
   });
 
   it("shows the model's own defaults as placeholders", () => {
@@ -109,5 +124,25 @@ describe('seed, placeholders and status', () => {
   it('says "Loading model…" exactly while percent is null (spec decision 7)', () => {
     expect(runStatus(null)).toBe('Loading model…');
     expect(runStatus(33.4)).toBe('Generating 33%');
+  });
+});
+
+describe('toggleLock', () => {
+  it('locking an empty field rolls a seed with the injected random and locks it', () => {
+    expect(toggleLock(form({ seed: '' }), () => 0)).toEqual(form({ seed: '1', seedLocked: true }));
+  });
+
+  it('locking a field that already holds a positive whole number keeps it', () => {
+    expect(toggleLock(form({ seed: '42' }), () => 0)).toEqual(form({ seed: '42', seedLocked: true }));
+  });
+
+  it('unlocking keeps the field', () => {
+    expect(toggleLock(form({ seed: '42', seedLocked: true }))).toEqual(form({ seed: '42', seedLocked: false }));
+  });
+
+  it('gives the same seed across two runs: lock, then generate twice', () => {
+    const locked = toggleLock(form({ seed: '' }), () => 0);
+    const afterFirst = afterRun(locked, Number(locked.seed));
+    expect(afterFirst.seed).toBe(locked.seed);
   });
 });

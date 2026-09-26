@@ -135,9 +135,33 @@ export function rollSeed(random: () => number = Math.random): number {
   return 1 + Math.floor(random() * MAX_SEED);
 }
 
-/** After a run: an unlocked seed field shows the seed used, so it can be locked to reproduce the image. */
+/** A field the daemon would accept as a fixed seed: trimmed, and a positive whole number. */
+function isLockableSeed(text: string): boolean {
+  const t = text.trim();
+  return /^\d+$/.test(t) && Number(t) > 0;
+}
+
+/**
+ * After a run: the form keeps its seed only when it was locked on a seed the
+ * run could actually have used. Otherwise — unlocked, or locked on something
+ * that is not a positive whole number, such as an empty field or '0' — the
+ * field is overwritten with the seed the run used, so it can be locked
+ * afterwards to reproduce the image. `seedLocked` is never changed here.
+ */
 export function afterRun(form: GenerateForm, usedSeed: number): GenerateForm {
-  return form.seedLocked ? form : { ...form, seed: String(usedSeed) };
+  if (form.seedLocked && isLockableSeed(form.seed)) return form;
+  return { ...form, seed: String(usedSeed) };
+}
+
+/**
+ * The 🔒 button. Unlocking just flips the flag; the field is left alone.
+ * Locking also fills the field when it is not already a positive whole
+ * number, so "lock, then generate twice" reproduces the same image.
+ */
+export function toggleLock(form: GenerateForm, random: () => number = Math.random): GenerateForm {
+  if (form.seedLocked) return { ...form, seedLocked: false };
+  if (isLockableSeed(form.seed)) return { ...form, seedLocked: true };
+  return { ...form, seed: String(rollSeed(random)), seedLocked: true };
 }
 
 /** The model's own defaults, shown as placeholders so an empty field is not a mystery (criterion 1). */
