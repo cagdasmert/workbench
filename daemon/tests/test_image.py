@@ -146,6 +146,22 @@ class RequestTest(unittest.TestCase):
         req = image.build_request("generate", out_dir=self.out, prompt="a gate")
         self.assertEqual(image.params_of(req), {"mode": "generate", "model": image.DEFAULT_MODEL, "prompt": "a gate"})
 
+    def test_a_nul_byte_in_a_prompt_or_instruction_is_refused(self) -> None:
+        # F1: Popen raises ValueError on a NUL in argv, which used to wedge the
+        # job in 'running' forever. Refuse it here instead, as a 400.
+        good = _png(self.tmp / "wall.png", 640, 480)
+        with self.assertRaises(image.ImageError) as cm:
+            image.build_request("generate", out_dir=self.out, prompt="a gate\x00 with a NUL")
+        self.assertIn("NUL", str(cm.exception))
+        with self.assertRaises(image.ImageError) as cm:
+            image.build_request("edit", out_dir=self.out, source=str(good), instruction="stone\x00wall")
+        self.assertIn("NUL", str(cm.exception))
+
+    def test_a_nul_byte_in_a_source_path_is_refused(self) -> None:
+        with self.assertRaises(image.ImageError) as cm:
+            image.build_request("edit", out_dir=self.out, source="/tmp/wall\x00.png", instruction="x")
+        self.assertIn("NUL", str(cm.exception))
+
 
 class SizeTest(unittest.TestCase):
     def test_fit_area_keeps_aspect_at_one_megapixel_in_multiples_of_16(self) -> None:

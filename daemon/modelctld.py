@@ -251,7 +251,11 @@ def start_job(kind: str, repo: str, args: list[str], *, script: str = MODELCTL_P
                 bufsize=1,
                 env=env,
             )
-        except OSError as e:
+        except (OSError, ValueError) as e:
+            # ValueError is Popen's own response to a NUL byte in argv
+            # ("embedded null byte") -- validation should have caught it
+            # earlier, but a job must still fail cleanly rather than wedge in
+            # 'running' forever if one slips through (F1).
             if result_path is not None:
                 result_path.unlink(missing_ok=True)
             with job._lock:
@@ -748,7 +752,10 @@ def h_image(mode: str, body: dict) -> dict:
 def h_image_file(q: dict) -> dict:
     """The full-resolution image, for Send to viewer and the before/after view."""
     raw = _required(q, "path")
-    path = Path(raw).expanduser()
+    try:
+        path = imagegen.expand_path(raw)
+    except imagegen.ImageError as e:
+        raise ApiError(str(e)) from None
     if not path.is_absolute():
         raise ApiError(f"path must be absolute, got {raw!r}")
     kind = imagegen.MIME_TYPES.get(path.suffix.lower())
@@ -766,12 +773,15 @@ def h_image_file(q: dict) -> dict:
 def h_image_save(body: dict) -> dict:
     """Save as...: copy one image into a folder the user chose, never overwriting."""
     raw = _required(body, "path")
-    source = Path(raw).expanduser()
+    try:
+        source = imagegen.expand_path(raw)
+        folder = imagegen.expand_path(_required(body, "dir"))
+    except imagegen.ImageError as e:
+        raise ApiError(str(e)) from None
     if not source.is_absolute() or source.suffix.lower() not in imagegen.MIME_TYPES:
         raise ApiError(f"path must be an absolute PNG, JPEG or WebP file, got {raw!r}")
     if not source.is_file():
         raise ApiError(f"no such file: {source}", status=404)
-    folder = Path(_required(body, "dir")).expanduser()
     if not folder.is_absolute() or not folder.is_dir():
         raise ApiError(f"dir must be an existing absolute folder, got {str(folder)!r}")
     problem = imagegen.write_denied(folder)

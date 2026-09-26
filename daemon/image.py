@@ -163,6 +163,18 @@ def write_denied(directory: Path) -> str | None:
     return None
 
 
+def expand_path(raw: str) -> Path:
+    """Expand '~' in a user-supplied path.
+
+    Refuses a NUL byte (F1): left unchecked, it reaches Popen's argv as
+    `ValueError: embedded null byte`, which wedges the job in 'running'
+    instead of failing the request that caused it.
+    """
+    if "\x00" in raw:
+        raise ImageError(f"path must not contain a NUL byte, got {raw!r}")
+    return Path(raw).expanduser()
+
+
 def resolve_out_dir(raw: object) -> Path:
     """Where results go: `raw` when it is an existing absolute folder, else the default.
 
@@ -174,7 +186,7 @@ def resolve_out_dir(raw: object) -> Path:
         return DEFAULT_OUT_DIR
     if not isinstance(raw, str):
         raise ImageError(f"out_dir must be a folder path, got {raw!r}")
-    folder = Path(raw).expanduser()
+    folder = expand_path(raw)
     if not folder.is_absolute() or not folder.is_dir():
         raise ImageError(f"out_dir must be an existing absolute folder, got {raw!r}")
     problem = write_denied(folder)
@@ -260,7 +272,7 @@ def validate_source(raw: object) -> Path:
     """An absolute path to an existing PNG, JPEG or WebP, or an ImageError that says why not."""
     if not isinstance(raw, str) or not raw:
         raise ImageError("path to a source image is required")
-    p = Path(raw).expanduser()
+    p = expand_path(raw)
     if not p.is_absolute():
         raise ImageError(f"path must be absolute, got {raw!r}")
     suffix = p.suffix.lower()
@@ -330,6 +342,10 @@ def _text(name: str, value: object, *, required: bool) -> str | None:
         if required:
             raise ImageError(f"{name} is required")
         return None
+    if "\x00" in stripped:
+        # F1: a NUL byte reaches Popen's argv as ValueError, which wedges the
+        # job in 'running' instead of failing the request that caused it.
+        raise ImageError(f"{name} must not contain a NUL byte")
     return stripped
 
 
@@ -362,7 +378,7 @@ def build_request(mode: str, *, model: object = None, out_dir: object = None,
         raise ImageError(f"mode must be one of {', '.join(ROLES)}, got {mode!r}")
     repo = _text("model", model, required=False) or DEFAULTS[mode]
     if is_path(repo):
-        folder = Path(repo).expanduser()
+        folder = expand_path(repo)
         if not folder.is_absolute() or not folder.is_dir():
             raise ImageError(f"model folder {repo!r} does not exist")
         repo = str(folder)

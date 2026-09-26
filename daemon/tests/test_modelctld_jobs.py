@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import os
+import tempfile
+import time
 import unittest
+from pathlib import Path
 
 import modelctld as d
 
@@ -53,6 +57,33 @@ class StartJobExclusiveTest(unittest.TestCase):
         with self.assertRaises(d.ApiError) as cm:
             d.start_job("pull", "a/x", [], script="/nonexistent.py")
         self.assertEqual(str(cm.exception), "a/x already has a running image job")
+
+
+def _wait_until_not_running(job: d.Job, timeout: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout
+    while job.state == "running" and time.monotonic() < deadline:
+        time.sleep(0.02)
+
+
+class StartJobNulByteTest(unittest.TestCase):
+    """F1: a NUL byte in argv must fail the job, not wedge it in 'running'."""
+
+    def test_a_nul_byte_in_argv_fails_the_job_and_frees_the_slot(self) -> None:
+        fd, out = tempfile.mkstemp(prefix="modelctld-f1-nul-", suffix=".json")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write("{}")
+        result_path = Path(out)
+        job = d.start_job("image", "nul/repo", ["--prompt=bad\x00value"],
+                          script="/nonexistent.py", result_path=result_path, exclusive_kind=True)
+        _wait_until_not_running(job)
+        self.assertEqual(job.state, "failed")
+        self.assertIn("null byte", job.error or "")
+        self.assertFalse(result_path.exists())
+
+        # The slot freed up: a new image job (a different repo, exclusive_kind)
+        # is accepted rather than getting the 409 a stuck 'running' job would cause.
+        second = d.start_job("image", "other/repo", [], script="/nonexistent.py", exclusive_kind=True)
+        _wait_until_not_running(second)
 
 
 if __name__ == "__main__":

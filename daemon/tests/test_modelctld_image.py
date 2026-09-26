@@ -120,7 +120,8 @@ class FileRouteTest(_ImageRoutes):
             for query, status in (({"path": ["notes.txt"]}, 400),
                                   ({"path": [str(self.tmp / "notes.txt")]}, 400),
                                   ({"path": [str(self.tmp / "gone.png")]}, 404),
-                                  ({"path": [str(self.tmp / "big.png")]}, 413)):
+                                  ({"path": [str(self.tmp / "big.png")]}, 413),
+                                  ({"path": [str(self.tmp / "big\x00.png")]}, 400)):
                 with self.subTest(query=query), self.assertRaises(d.ApiError) as cm:
                     d.h_image_file(query)
                 self.assertEqual(cm.exception.status, status)
@@ -147,7 +148,9 @@ class SaveRouteTest(_ImageRoutes):
         for body, status in (({"path": str(self.src), "dir": "chosen"}, 400),
                              ({"path": str(self.src), "dir": str(self.tmp / "plugins")}, 400),
                              ({"path": str(self.tmp / "a.gif"), "dir": str(self.dest)}, 400),
-                             ({"path": str(self.tmp / "gone.png"), "dir": str(self.dest)}, 404)):
+                             ({"path": str(self.tmp / "gone.png"), "dir": str(self.dest)}, 404),
+                             ({"path": str(self.src), "dir": str(self.dest) + "\x00"}, 400),
+                             ({"path": str(self.src) + "\x00", "dir": str(self.dest)}, 400)):
             with self.subTest(body=body), self.assertRaises(d.ApiError) as cm:
                 d.h_image_save(body)
             self.assertEqual(cm.exception.status, status)
