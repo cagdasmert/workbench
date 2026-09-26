@@ -141,11 +141,13 @@ def model_dir(model: str, resolve: Callable[[str], str | None]) -> Path | None:
 DEFAULT_OUT_DIR = Path.home() / "Pictures" / "Workbench"
 PREVIEW_EDGE = 512
 
-# Workbench loads plugins from here at launch, so a file written into it is code
-# that runs on the next start with no prompt (workbench CLAUDE.md, "Watch for").
-# The fs broker deny-lists it; the daemon's writes do too.
+# This matches the broker's Workbench entry (fs-grants.ts), not its whole
+# deny-list: settings and other app state live in siblings of plugins/, and
+# Workbench loads plugins from plugins/ at launch, so a file written under
+# either is either code that runs on the next start with no prompt, or state
+# the app itself owns (workbench CLAUDE.md, "Watch for").
 DENIED_WRITE_ROOTS: tuple[Path, ...] = (
-    Path.home() / "Library" / "Application Support" / "Workbench" / "plugins",
+    Path.home() / "Library" / "Application Support" / "Workbench",
 )
 
 
@@ -174,7 +176,8 @@ def write_denied(directory: Path) -> str | None:
         except OSError:
             continue
         if (st.st_dev, st.st_ino) in denied_ids:
-            return f"{directory} is inside Workbench's plugin folder, which is never written to"
+            return (f"{directory} is inside Workbench's application folder, where its plugins "
+                    "and settings live; it is never written to")
     return None
 
 

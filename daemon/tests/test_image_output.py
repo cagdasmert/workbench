@@ -44,6 +44,15 @@ class _TmpDirs(unittest.TestCase):
         self._tmp.cleanup()
 
 
+class DeniedWriteRootsTest(unittest.TestCase):
+    def test_the_default_root_is_the_whole_workbench_app_folder_not_just_plugins(self) -> None:
+        # F9: the TS broker (fs-grants.ts) denies all of .../Workbench, not
+        # only .../Workbench/plugins -- settings and other app state live in
+        # siblings of plugins/, and the daemon's own deny-list should match.
+        self.assertEqual(image.DENIED_WRITE_ROOTS,
+                         (Path.home() / "Library" / "Application Support" / "Workbench",))
+
+
 class OutDirTest(_TmpDirs):
     def test_empty_means_the_default_which_is_created(self) -> None:
         for raw in (None, ""):
@@ -64,7 +73,7 @@ class OutDirTest(_TmpDirs):
         for raw in (str(inside), str(link / "evil"), str(self.tmp / "plugins")):
             with self.subTest(raw=raw), self.assertRaises(image.ImageError) as cm:
                 image.resolve_out_dir(raw)
-            self.assertIn("plugin folder", str(cm.exception))
+            self.assertIn("application folder", str(cm.exception))
 
     @unittest.skipUnless(_CASE_INSENSITIVE_VOLUME, "temp volume is case-sensitive")
     def test_a_differently_cased_spelling_of_the_root_is_still_denied(self) -> None:
@@ -75,7 +84,7 @@ class OutDirTest(_TmpDirs):
         swapped = self.tmp / "PLUGINS"
         with self.assertRaises(image.ImageError) as cm:
             image.resolve_out_dir(str(swapped))
-        self.assertIn("plugin folder", str(cm.exception))
+        self.assertIn("application folder", str(cm.exception))
 
 
 class OpenNewTest(_TmpDirs):
