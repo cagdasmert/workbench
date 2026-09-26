@@ -90,7 +90,12 @@ export const START_COMMAND = 'modelctl serve';
 export type DaemonErrorKind = 'offline' | 'denied' | 'protocol' | 'api';
 
 export class DaemonError extends Error {
-  constructor(message: string, readonly hint: string | undefined, readonly kind: DaemonErrorKind) {
+  constructor(
+    message: string,
+    readonly hint: string | undefined,
+    readonly kind: DaemonErrorKind,
+    readonly status?: number,
+  ) {
     super(message);
     this.name = 'DaemonError';
   }
@@ -190,6 +195,7 @@ export class ImageClient {
         typeof e.error === 'string' ? e.error : `HTTP ${res.status}`,
         typeof e.hint === 'string' ? e.hint : undefined,
         'api',
+        res.status,
       );
     }
     return parsed as T;

@@ -52,6 +52,14 @@ describe('ImageClient', () => {
     expect([err.kind, err.message, err.hint]).toEqual(['api', 'another image job is running (m/x)', 'poll /v1/jobs/abc']);
   });
 
+  it('carries the response status on an api error, for example 409', async () => {
+    const { client } = make(async () => ({
+      status: 409, ok: false, headers: {}, body: JSON.stringify({ error: 'busy' }),
+    }));
+    const err = (await client.generate({ prompt: 'x', model: 'm/x' }).catch((e: unknown) => e)) as DaemonError;
+    expect(err.status).toBe(409);
+  });
+
   it('calls a non-JSON answer a protocol error', async () => {
     const { client } = make(async () => ({ status: 200, ok: true, headers: {}, body: '<html>' }));
     expect(((await client.jobs().catch((e: unknown) => e)) as DaemonError).kind).toBe('protocol');
