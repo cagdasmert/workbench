@@ -34,7 +34,7 @@ The daemon is the only record of jobs. The panel asks `GET /v1/jobs` on mount, a
   - keybinding `cmd+shift+g`
 - **Default model, copied verbatim:** `mflux-community/z-image-turbo-mflux-q8`. A model is a repo id, or an absolute folder path starting with `/` or `~` (spec decision 5). A folder path is never marked "not downloaded".
 - **Storage key `history`** holds `HistoryEntry[]` (spec decision 16), newest first, capped at the `historyLimit` setting, whose default is 200.
-- **The daemon is the only record of jobs.** No job id is ever stored (spec decision 17).
+- **The daemon is the only record of jobs.** No pointer to a running job is ever stored: the panel works it out from `GET /v1/jobs` (spec decision 17). A finished history entry does carry its job id, as its key (decision 16).
 - **Status wording:** `percent === null` shows `Loading model…`; otherwise the status is `Generating N%` (spec decision 7).
 - **The written path is always shown under the result** (spec decision 21, PRD criterion 5).
 - **Commands carry a complete `args` block** (C5). Their positional args arrive in schema order.
