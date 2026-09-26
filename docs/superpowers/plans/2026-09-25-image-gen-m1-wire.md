@@ -2065,11 +2065,84 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ### Task 9: The gate — real models over `curl`, then the record
 
 **Files:**
+- Modify: `daemon/modelctld.py`, `daemon/tests/test_modelctld_jobs.py`, `daemon/tests/test_modelctld_guard.py` (Step 0)
 - Modify: `daemon/README.md` (the script table), `docs/m1-shell-change-log.md` (entry 42)
 
 This task runs the real models, which **the user downloads with modelctl**. No agent pulls them.
 
 Pick a scratch folder (your session scratchpad, or `mktemp -d`) and use it as `G` below. **Every shell block declares `G` and `PY` again**, because shell state does not carry between tool calls.
+
+- [ ] **Step 0: Close each job's output pipe, and never leave a job `running` after its reader dies**
+
+*(Added 2026-09-26 from the final review's re-review, carried here by controller ruling.)* Two defects in `start_job`'s `run()`, both present before this branch and exercised by the gate:
+- **A pipe leak.** `proc.stdout` is drained but never closed, so each job keeps one pipe fd open until it is evicted from `JOBS` (up to 50). The same leak prints three `ResourceWarning: unclosed file` lines at the end of the suite.
+- **A stuck job.** With `text=True` decoding strictly, a child that prints bytes that are not valid UTF-8 raises `UnicodeDecodeError` in the reader thread. The job then stays `running` forever, and with `exclusive_kind`, every later image job gets a 409 until the daemon restarts.
+
+Write the failing tests first, appending to `daemon/tests/test_modelctld_jobs.py`:
+
+```python
+class JobOutputTest(unittest.TestCase):
+    def _run(self, source: str, repo: str) -> d.Job:
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "child.py"
+            script.write_text(source)
+            job = d.start_job("test-output", repo, [], script=str(script))
+            deadline = time.time() + 10
+            while job.state == "running" and time.time() < deadline:
+                time.sleep(0.05)
+        return job
+
+    def test_bytes_that_are_not_utf8_do_not_wedge_the_job(self) -> None:
+        job = self._run('import sys; sys.stdout.buffer.write(b"\\xff bad\\n"); sys.stdout.flush()\n',
+                        "test/bad-bytes")
+        self.assertEqual(job.state, "done")
+        self.assertIn("�", job.lines[0])
+
+    def test_a_finished_job_holds_no_pipe(self) -> None:
+        job = self._run('print("ok")\n', "test/pipe-closed")
+        self.assertEqual(job.state, "done")
+        self.assertTrue(job._proc is not None and job._proc.stdout is not None and job._proc.stdout.closed)
+```
+
+Add `import tempfile`, `import time` and `from pathlib import Path` to that file's imports if they are missing.
+
+Then, in `daemon/modelctld.py` `start_job`'s `run()`:
+1. Add `errors="replace",` to the `subprocess.Popen(...)` arguments, after `text=True,`.
+2. Replace the block from `assert proc.stdout is not None` through `code = proc.wait()` with:
+
+```python
+        assert proc.stdout is not None
+        try:
+            with proc.stdout:   # closed once drained: a finished job must not keep a pipe open
+                for raw in _iter_progress_lines(proc.stdout):
+                    line = raw.rstrip()
+                    if not line:
+                        continue
+                    with job._lock:
+                        job.lines.append(line)
+                        m = PERCENT_RE.findall(line)
+                        if m:
+                            job.percent = min(100.0, float(m[-1]))
+        except Exception as e:  # noqa: BLE001 -- a dead reader must not leave the job 'running' forever
+            proc.kill()
+            proc.wait()
+            if result_path is not None:
+                result_path.unlink(missing_ok=True)
+            with job._lock:
+                job.state, job.error, job.finished = "failed", f"lost the job's output: {e}", time.time()
+            return
+        code = proc.wait()
+```
+
+Three small cleanups go in the same step:
+- `_raise_for_os_error` is annotated `-> None` but always raises. Change it to `-> NoReturn`, and add `from typing import NoReturn` to the imports.
+- The module docstring's "Loopback only, and no browser may reach it" bullet: add one sentence saying that, with no token, a `Host` other than loopback is refused too, against DNS rebinding (spec decision 25).
+- `tests/test_modelctld_guard.py`: start the test server with `serve_forever(poll_interval=0.05)`, through `target=lambda: self.httpd.serve_forever(poll_interval=0.05)`, so the six guard tests stop paying a 0.5 s shutdown poll each.
+
+Run: `cd /Users/cagdasmert/work/WS/workbench/daemon && ~/work/tools/huggingface/.venv/bin/python -m unittest tests.test_modelctld_jobs -v && ~/work/tools/huggingface/.venv/bin/python -m unittest discover -s tests 2>&1 | tail -4`
+Expected: the new tests pass, the full suite passes (175 tests), and **no `ResourceWarning` line** appears in the output.
+
+Commit with the message `modelctld: close each job's pipe, and a dead reader fails the job` and the usual trailer.
 
 - [ ] **Step 1: Check that the user has pulled the two M1 models**
 
@@ -2214,7 +2287,7 @@ in its path, as modelctl's `models--org--name` layout always does.
 - Upscale 2× → <W>×<H>, load <load_s> s, generate <gen_s> s, peak <peak_gb> GB.
 - `/file` and `/save` (the second save lands as `-2.png`).
 - The second run gave the model as a folder path (`modelctl path`) and produced the same pixels.
-- 56 new daemon tests (147 total). No test loads weights.
+- 84 new daemon tests (175 total). No test loads weights.
 
 **Not yet verified:** editing — the edit model is pulled at the facade spike, which decides `editModel`.
 
@@ -2226,7 +2299,7 @@ Replace every `<…>` with the measured value. Do not commit the entry until eve
 - [ ] **Step 8: Run the full suite once more, then commit**
 
 Run: `cd /Users/cagdasmert/work/WS/workbench/daemon && ~/work/tools/huggingface/.venv/bin/python -m unittest discover -s tests`
-Expected: `OK` (147 tests)
+Expected: `OK` (175 tests)
 
 ```bash
 cd /Users/cagdasmert/work/WS/workbench
