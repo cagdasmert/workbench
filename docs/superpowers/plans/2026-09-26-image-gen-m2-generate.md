@@ -2096,12 +2096,14 @@ Expected: everything passes, and the model is listed at about 11.0 GB. If it isn
 
 Setup: run `modelctl serve` (restart it if it was started from another branch), then `npm run dev` in `~/work/WS/workbench`.
 
+Setup note: any jobs the daemon still holds from before this session — for example ones left over from M1's curl gate — appear in the strip the first time the panel opens. That is decision 17 working as intended: the panel has no memory of its own, so whatever `GET /v1/jobs` reports is what shows up.
+
 1. **Open.** `cmd+shift+g` opens **Images**. The model select shows `z-image-turbo-mflux-q8`, and the Steps placeholder says `9` (criterion 1).
 2. **Generate.** Type a prompt and press Generate. The status reads `Loading model…`, then `Generating N%`. The image appears with **its file path under it**, and a tile joins the strip (criterion 5).
 3. **Close mid-run.** Start another generation, and switch to a different panel while it says `Loading model…`. Come back to Images: the placeholder tile and the status are back, and the result lands in the strip.
-4. **Restart.** Quit the app and run `npm run dev` again. The strip still shows both tiles, and clicking a tile shows that image and its path (criterion 2, first half).
-5. **Seed.** Lock the seed (🔒) and generate twice with the same prompt. The two images look identical (criterion 3, by eye; M1's gate already checked it by pixel hash).
-6. **Command.** From the palette, run *Generate an Image* with a prompt. The panel opens and the job runs.
+4. **Restart.** Quit the app, **and** stop and restart `modelctl serve` (not just the app), then run `npm run dev` again. Restarting the daemon clears its job list, so this is the check that the tiles come back from `ctx.storage` and not from anything the daemon remembers — that is what decision 16 needs proven. The strip still shows both tiles, and clicking a tile shows that image and its path (criterion 2, first half).
+5. **Seed.** Click 🔒, which fills a seed if the field is empty, then generate twice with the same prompt. The two images are identical (criterion 3, by eye; M1's gate already checked it by pixel hash).
+6. **Command.** From the palette, run *Generate an Image* with no arguments. It opens the Images panel with the prompt focused, ready to type into — it does not warn or generate anything itself. (The argument path — a prompt passed straight through — is covered by `plugin.test.ts`, until the S2 MCP server is the one calling the command.)
 7. **Offline.** Stop `modelctl serve`, then reopen the panel. It says the image daemon isn't running and shows `modelctl serve`.
 
 Anything that fails is a bug. Fix it with a test, in its own commit, before recording.
