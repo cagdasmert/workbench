@@ -2083,6 +2083,74 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 **Files:**
 - Modify: `docs/m1-shell-change-log.md` (entry 43)
 
+- [ ] **Step 0: Four small fixes left open by the final review's re-review**
+
+*(Added 2026-09-26 by controller ruling. There is no second fix wave, so they are carried here, into the task that exercises them.)* Use TDD for (a) and (d); (b) and (c) are verified by typecheck and reading.
+
+(a) **The model select says "— not downloaded" before the catalog has loaded.** In `plugins/image-gen/src/form.ts`, `modelOptions` accepts `catalog: readonly ImageModel[] | null`. A null catalog means *unknown*, so nothing is marked missing:
+
+```ts
+export function modelOptions(
+  catalog: readonly ImageModel[] | null,
+  configured: string,
+  role: ImageModel['role'],
+): ModelOption[] {
+  const rows = (catalog ?? []).filter((m) => m.role === role);
+  const options: ModelOption[] = rows.map((m) => ({ value: m.repo, label: shortModel(m.repo), info: m, missing: false }));
+  if (configured !== '' && !rows.some((m) => m.repo === configured)) {
+    // Unknown until the catalog loads: never claim "not downloaded" before the daemon has said so.
+    const missing = catalog !== null && !isPath(configured);
+    options.unshift({
+      value: configured,
+      label: missing ? `${shortModel(configured)} — not downloaded` : shortModel(configured),
+      info: null,
+      missing,
+    });
+  }
+  return options;
+}
+```
+
+In `index.tsx`, pass `catalog` itself: `modelOptions(catalog, configuredModel, 'generate')`, without `?? []`. Add this test to `form.test.ts`'s `modelOptions` block:
+
+```ts
+  it('marks nothing missing while the catalog is still unknown', () => {
+    expect(modelOptions(null, DEFAULT_GENERATE_MODEL, 'generate')).toEqual([
+      { value: DEFAULT_GENERATE_MODEL, label: 'z-image-turbo-mflux-q8', info: null, missing: false },
+    ]);
+  });
+```
+
+(b) **Make `isEntry`'s role check sound.** In `history.ts`, replace `ROLES.includes(e['mode'] as Role)` with `(ROLES as readonly string[]).includes(e['mode'])`: a widening, sound because `readonly Role[]` is a `readonly string[]`. Delete the comment above it that explains the `Role` cast.
+
+(c) **A problem the poller showed clears when polling recovers.** In `index.tsx`, add `const pollProblem = useRef(false);` beside the other refs. In the poller's `onError`, set `pollProblem.current = true;` just before the final `setProblem(e);`. At the top of `onValue`, add:
+
+```ts
+        if (pollProblem.current) {
+          pollProblem.current = false;
+          setProblem(null);
+        }
+```
+
+A failure reported by a finished job still sets its own problem after this line, as it does now.
+
+(d) **The "lock, then generate twice" test must be able to fail.** In `form.test.ts`, replace the test named `gives the same seed across two runs: lock, then generate twice` with:
+
+```ts
+  it('gives the same seed across two runs: lock, then generate twice', () => {
+    const locked = toggleLock(form({ prompt: 'x', seed: '' }), () => 0);
+    const first = toGenerateRequest(locked, opts);
+    const second = toGenerateRequest(afterRun(locked, 1), opts);
+    expect(first).toEqual({ ok: true, req: { prompt: 'x', model: DEFAULT_GENERATE_MODEL, seed: 1 } });
+    expect(second).toEqual(first);
+  });
+```
+
+Run: `cd /Users/cagdasmert/work/WS/workbench && npx vitest run plugins/image-gen && npm run typecheck && npm test`
+Expected: all pass, with 226 vitest tests, and `tsc -b` clean.
+
+Commit with the message `image-gen: no "not downloaded" before the catalog loads, a sound role check, a clearing poll error` and the usual trailer.
+
 - [ ] **Step 1: Build, and check that the model is there**
 
 ```bash
@@ -2096,14 +2164,14 @@ Expected: everything passes, and the model is listed at about 11.0 GB. If it isn
 
 Setup: run `modelctl serve` (restart it if it was started from another branch), then `npm run dev` in `~/work/WS/workbench`.
 
-Setup note: any jobs the daemon still holds from before this session — for example ones left over from M1's curl gate — appear in the strip the first time the panel opens. That is decision 17 working as intended: the panel has no memory of its own, so whatever `GET /v1/jobs` reports is what shows up.
+Setup note: any jobs the daemon still holds from before this session — for example ones left over from M1's curl gate — appear in the strip the first time the panel opens. That is decision 17 working as intended: on mount, the panel records every finished image job the daemon still holds that is not in its history yet, and re-attaches to a running one.
 
 1. **Open.** `cmd+shift+g` opens **Images**. The model select shows `z-image-turbo-mflux-q8`, and the Steps placeholder says `9` (criterion 1).
 2. **Generate.** Type a prompt and press Generate. The status reads `Loading model…`, then `Generating N%`. The image appears with **its file path under it**, and a tile joins the strip (criterion 5).
 3. **Close mid-run.** Start another generation, and switch to a different panel while it says `Loading model…`. Come back to Images: the placeholder tile and the status are back, and the result lands in the strip.
-4. **Restart.** Quit the app, **and** stop and restart `modelctl serve` (not just the app), then run `npm run dev` again. Restarting the daemon clears its job list, so this is the check that the tiles come back from `ctx.storage` and not from anything the daemon remembers — that is what decision 16 needs proven. The strip still shows both tiles, and clicking a tile shows that image and its path (criterion 2, first half).
+4. **Restart.** Quit the app, **and** stop and restart `modelctl serve` (not just the app), then run `npm run dev` again. Restarting the daemon clears its job list, so this is the check that the tiles come back from `ctx.storage` and not from anything the daemon remembers — that is what decision 16 needs proven. The strip still shows the tiles from steps 2 and 3, and clicking a tile shows that image and its path (criterion 2, first half).
 5. **Seed.** Click 🔒, which fills a seed if the field is empty, then generate twice with the same prompt. The two images are identical (criterion 3, by eye; M1's gate already checked it by pixel hash).
-6. **Command.** From the palette, run *Generate an Image* with no arguments. It opens the Images panel with the prompt focused, ready to type into — it does not warn or generate anything itself. (The argument path — a prompt passed straight through — is covered by `plugin.test.ts`, until the S2 MCP server is the one calling the command.)
+6. **Command.** Switch to another panel first. `openPanel` on the active panel does not remount it, so the prompt could not be focused from Images itself. Then, from the palette, run *Generate an Image* with no arguments. It opens the Images panel with the prompt focused, ready to type into — it does not warn or generate anything itself. (The argument path — a prompt passed straight through — is covered by `plugin.test.ts`, until the S2 MCP server is the one calling the command.)
 7. **Offline.** Stop `modelctl serve`, then reopen the panel. It says the image daemon isn't running and shows `modelctl serve`.
 
 Anything that fails is a bug. Fix it with a test, in its own commit, before recording.

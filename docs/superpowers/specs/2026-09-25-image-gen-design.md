@@ -289,10 +289,11 @@ Each milestone gets its own plan in `docs/superpowers/plans/` and appends to
 - **Disk.** The defaults take about 43 GB, and the spike's Klein pull adds 18 GB, all on the
   internal drive (152 GB free on 2026-09-25) while Kingston is unmounted.
 - **`net.fetch`'s response cap is smaller than a route it will carry.** `packages/main/src/net-
-  broker.ts` caps a `net.fetch` response body at 8 MB (`MAX_BODY_BYTES`), but decision 19's
-  `GET /v1/generate/image/file` allows up to 50 MB (decision 23, `413` past that). *Send to
-  viewer* on a large image — a 3× upscale, or a big edit source — would throw past the broker's
-  cap before it ever reaches the 413, and `ImageClient` has no way to tell that apart from the
-  daemon simply not answering: it surfaces as `offline`, which is the wrong diagnosis for a
-  request that never left the renderer. Decision 19 needs a smaller cap on that route, or another
-  transport for it, before M4 builds *Send to viewer* on top of it.
+  broker.ts` caps a `net.fetch` response body at 8 MB (`MAX_BODY_BYTES`), but
+  `GET /v1/generate/image/file` allows files up to 50 MB (the wire contract; `413` past that).
+  Its body is base64 inside JSON, so the real limit is about 6 MB of image. *Send to viewer* on a
+  large image, such as a 3× upscale or a big edit source, gets a 200 from the daemon, and main's
+  broker then rejects the body as too large. `ImageClient` cannot tell that rejection from a
+  daemon that did not answer, so it reports `offline`, which is the wrong diagnosis. Decision 19
+  needs a smaller cap on that route, or another transport for it, before M4 builds *Send to
+  viewer* on it.
