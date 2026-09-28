@@ -1522,3 +1522,48 @@ The remaining failures are framing, not invention. Retrieval choosing the wrong 
 (entry 38) is untouched by this change and is still the ceiling.
 
 Tests: 5 new daemon tests (91 total) and 3 plugin tests rewritten or added (44 in the plugin).
+
+---
+
+## 42 · Images M1: an mflux runtime, and one image job at a time
+
+**Plugin:** image-gen (vault PRD P4) · **Verdict:** DAEMON ONLY — no workbench code yet
+
+`image.py` beside `asr.py`, and six routes under `/v1/generate/image` on `modelctld`. Design
+deltas over the PRD are in `docs/superpowers/specs/2026-09-25-image-gen-design.md`; the plan is
+`docs/superpowers/plans/2026-09-25-image-gen-m1-wire.md`.
+
+**The PRD's runtime was not the runtime.** `image_gen.py` uses diffusers and a single `pipe(prompt)` call: no
+image input, no Z-Image preset, and Qwen-Image-Edit at bf16 does not fit in 48 GB. `image.py` runs mflux 0.20 on
+pre-quantized `mflux-community` weights instead. `image_gen.py` stays as the standalone CLI.
+
+**One image job at a time, under one lock.** `JobStore.claim` checks for a conflict and adds the job in a single
+lock hold. Same repo conflicts as before; with `exclusive_kind`, so does the same kind. That closes the
+check-then-add gap `running_for` left, and it is what stops two image models swapping together.
+
+**Loading has no percent.** `image.py` switches tqdm off and prints its own `step i/n  p%` lines from an mflux
+callback. Nothing before the loop contains `%`, so `percent: null` means "loading model" without a new job field.
+
+**A model is a repo id or a folder path.** Downloads are the user's, through modelctl. A repo id is found wherever
+modelctl put it. A value starting with `/` or `~` is loaded exactly as given, never looked up, and must name its
+family in its path, as modelctl's `models--org--name` layout always does.
+
+**Verified** on the real models (Z-Image Turbo q8, SeedVR2 3B, M4 Pro, 48 GB):
+- Generate, 1024², no steps sent → 9 steps. load 4.05 s, generate 104.7 s, peak 13.8 GB.
+- The same seed twice → pixel-identical (sha256 of the decoded pixels).
+- A second POST while one ran → 409 naming the running job.
+- Upscale 2× → 2048×2048, load 1.38 s, generate 56.07 s, peak 18.2 GB.
+- `/file` and `/save` (the second save lands as `-2.png`).
+- The second run gave the model as a folder path (`modelctl path`) and produced the same pixels.
+- 84 new daemon tests (175 total). No test loads weights.
+
+**Verified, surprising:** loading was fast enough (4.05 s cold, 3.62 s warm) that the `percent: null`
+window closed before a poll landed inside it on the first attempt — the job had already reached `step
+1/9  11%` by the time the first status check ran. The generous "minutes to load" expectation in the task
+brief did not hold on this machine; weights were presumably still warm in the OS page cache from a prior
+`modelctl ls`/verification pass. Upscale's SeedVR2 pass was likewise quick: 56 s total for a 2× pass on a
+1024² source.
+
+**Not yet verified:** editing — the edit model is pulled at the facade spike, which decides `editModel`.
+
+**Contract impact:** none. Workbench is untouched so far.

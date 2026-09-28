@@ -11,6 +11,7 @@ routes run as job subprocesses.
 | `asr.py` | mlx-whisper, parakeet-mlx | `transcribe` |
 | `embed.py` | chunker, SQLite index, search worker | `vault-search` |
 | `text.py` | mlx-lm | `vault-search` (answer fallback) |
+| `image.py` | mflux: generate, edit, upscale | `image-gen` |
 | `image_gen.py` | diffusers: a standalone CLI, not wired to the daemon | — |
 
 The full reference, including flags, routes and troubleshooting, is `MANUAL.md` in the vault at
