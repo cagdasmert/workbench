@@ -1561,8 +1561,10 @@ family in its path, as modelctl's `models--org--name` layout always does.
 landed inside it on the first attempt — the job had already reached `step 1/9  11%` by the time the first
 status check ran. Measured: `load_s` was about 4 s on both generate runs (4.05 s job 1, 3.62 s job 2), and
 `gen_s` was about 101–105 s for the 9 z-image-turbo steps at 1024² (104.7 s job 1, 100.67 s job 2) —
-roughly 11 s per step. The first generate ran about 4 s slower than the second, tracking the `load_s`
-difference almost exactly. `modelctl ls` only stats files and reads a small JSON sidecar, and the
+roughly 11 s per step. The first run's `gen_s` was 4.03 s longer than the second's (104.7 s against
+100.67 s), while its `load_s` was only 0.43 s longer (4.05 s against 3.62 s). That is what lazy loading
+would predict: the extra first-run cost shows up in generation, not in load. `modelctl ls` only stats
+files and reads a small JSON sidecar, and the
 controller's pre-task check only ran `stat` and compared sizes — neither reads the multi-GB safetensors
 contents, so a warm OS page cache does not explain the gap. The likely explanation is lazy loading: MLX
 builds weight arrays lazily, so `load_s` (timed around model construction in `image.py`'s `run()`) likely
