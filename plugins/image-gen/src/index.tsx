@@ -74,6 +74,7 @@ function ImagesPanel({ ctx }: { ctx: PanelContext }) {
   // F5: the array set by the load effect, so the persist effect can tell "just
   // loaded" apart from "changed since" without writing back what it just read.
   const loadedRef = useRef<HistoryEntry[] | null>(null);
+  const pollProblem = useRef(false);
 
   const client = useMemo(() => new ImageClient(ctx.plugin, daemonUrl, token), [ctx, daemonUrl, token]);
 
@@ -178,6 +179,10 @@ function ImagesPanel({ ctx }: { ctx: PanelContext }) {
     const poller = startPoller<ImageJob>({
       fetch: () => client.job(runningId),
       onValue: (job) => {
+        if (pollProblem.current) {
+          pollProblem.current = false;
+          setProblem(null);
+        }
         if (job.state === 'running') {
           setRunning(job);
           return;
@@ -197,6 +202,7 @@ function ImagesPanel({ ctx }: { ctx: PanelContext }) {
           return;
         }
         // Anything else: show it, but keep polling — the loop may still recover.
+        pollProblem.current = true;
         setProblem(e);
       },
       next: (job) => (job.state === 'running' ? 1_000 : undefined),
@@ -206,7 +212,7 @@ function ImagesPanel({ ctx }: { ctx: PanelContext }) {
 
   // ─── actions ───────────────────────────────────────────────
 
-  const options = useMemo(() => modelOptions(catalog ?? [], configuredModel, 'generate'), [catalog, configuredModel]);
+  const options = useMemo(() => modelOptions(catalog, configuredModel, 'generate'), [catalog, configuredModel]);
   const option = options.find((o) => o.value === form.model) ?? null;
   const info = option?.info ?? null;
   const hints = placeholders(info);

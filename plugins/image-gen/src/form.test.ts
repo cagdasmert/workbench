@@ -88,6 +88,12 @@ describe('modelOptions', () => {
     const [first] = modelOptions([Z], '/Users/me/models/z-image-turbo-q8', 'generate');
     expect(first).toEqual({ value: '/Users/me/models/z-image-turbo-q8', label: 'z-image-turbo-q8', info: null, missing: false });
   });
+
+  it('marks nothing missing while the catalog is still unknown', () => {
+    expect(modelOptions(null, DEFAULT_GENERATE_MODEL, 'generate')).toEqual([
+      { value: DEFAULT_GENERATE_MODEL, label: 'z-image-turbo-mflux-q8', info: null, missing: false },
+    ]);
+  });
 });
 
 describe('seed, placeholders and status', () => {
@@ -141,8 +147,10 @@ describe('toggleLock', () => {
   });
 
   it('gives the same seed across two runs: lock, then generate twice', () => {
-    const locked = toggleLock(form({ seed: '' }), () => 0);
-    const afterFirst = afterRun(locked, Number(locked.seed));
-    expect(afterFirst.seed).toBe(locked.seed);
+    const locked = toggleLock(form({ prompt: 'x', seed: '' }), () => 0);
+    const first = toGenerateRequest(locked, opts);
+    const second = toGenerateRequest(afterRun(locked, 1), opts);
+    expect(first).toEqual({ ok: true, req: { prompt: 'x', model: DEFAULT_GENERATE_MODEL, seed: 1 } });
+    expect(second).toEqual(first);
   });
 });

@@ -45,11 +45,16 @@ export type ModelOption = {
  * when the catalog does not list it. A folder path is never marked missing,
  * because the catalog cannot know about it (spec decision 5).
  */
-export function modelOptions(catalog: readonly ImageModel[], configured: string, role: ImageModel['role']): ModelOption[] {
-  const rows = catalog.filter((m) => m.role === role);
+export function modelOptions(
+  catalog: readonly ImageModel[] | null,
+  configured: string,
+  role: ImageModel['role'],
+): ModelOption[] {
+  const rows = (catalog ?? []).filter((m) => m.role === role);
   const options: ModelOption[] = rows.map((m) => ({ value: m.repo, label: shortModel(m.repo), info: m, missing: false }));
   if (configured !== '' && !rows.some((m) => m.repo === configured)) {
-    const missing = !isPath(configured);
+    // Unknown until the catalog loads: never claim "not downloaded" before the daemon has said so.
+    const missing = catalog !== null && !isPath(configured);
     options.unshift({
       value: configured,
       label: missing ? `${shortModel(configured)} — not downloaded` : shortModel(configured),
