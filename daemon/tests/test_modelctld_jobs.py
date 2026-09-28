@@ -86,5 +86,28 @@ class StartJobNulByteTest(unittest.TestCase):
         _wait_until_not_running(second)
 
 
+class JobOutputTest(unittest.TestCase):
+    def _run(self, source: str, repo: str) -> d.Job:
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "child.py"
+            script.write_text(source)
+            job = d.start_job("test-output", repo, [], script=str(script))
+            deadline = time.time() + 10
+            while job.state == "running" and time.time() < deadline:
+                time.sleep(0.05)
+        return job
+
+    def test_bytes_that_are_not_utf8_do_not_wedge_the_job(self) -> None:
+        job = self._run('import sys; sys.stdout.buffer.write(b"\\xff bad\\n"); sys.stdout.flush()\n',
+                        "test/bad-bytes")
+        self.assertEqual(job.state, "done")
+        self.assertIn("�", job.lines[0])
+
+    def test_a_finished_job_holds_no_pipe(self) -> None:
+        job = self._run('print("ok")\n', "test/pipe-closed")
+        self.assertEqual(job.state, "done")
+        self.assertTrue(job._proc is not None and job._proc.stdout is not None and job._proc.stdout.closed)
+
+
 if __name__ == "__main__":
     unittest.main()

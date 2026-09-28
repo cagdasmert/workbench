@@ -23,7 +23,8 @@ class _LiveServer(unittest.TestCase):
         os.environ["MODELCTLD_QUIET"] = "1"   # keep the request log off the test's own stderr
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), d.Handler)
         self.port = self.httpd.server_address[1]
-        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread = threading.Thread(target=lambda: self.httpd.serve_forever(poll_interval=0.05),
+                                       daemon=True)
         self.thread.start()
 
     def tearDown(self) -> None:

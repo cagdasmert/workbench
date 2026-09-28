@@ -26,7 +26,9 @@ Design notes
   request carrying `Origin` or `Referer` is refused -- those headers are exactly
   what a browser adds and what Electron's main process does not, which makes a
   drive-by POST from a web page fail without needing CORS to be understood
-  correctly. `--token` adds a shared secret on top when you want one.
+  correctly. `--token` adds a shared secret on top when you want one. With no
+  token configured, a `Host` other than loopback is refused too, against DNS
+  rebinding (spec decision 25).
 * **`/v1/index/*` is the vault index.** embed.py is imported in-process for
   the store and change scan (stdlib only); embedding runs as an `embed` job,
   one per model, like a pull. The daemon never imports torch.
@@ -59,6 +61,7 @@ from collections import deque
 from datetime import date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import NoReturn
 from urllib.parse import parse_qs, unquote, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -248,6 +251,7 @@ def start_job(kind: str, repo: str, args: list[str], *, script: str = MODELCTL_P
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                errors="replace",
                 bufsize=1,
                 env=env,
             )
@@ -266,15 +270,25 @@ def start_job(kind: str, repo: str, args: list[str], *, script: str = MODELCTL_P
             job._proc = proc
 
         assert proc.stdout is not None
-        for raw in _iter_progress_lines(proc.stdout):
-            line = raw.rstrip()
-            if not line:
-                continue
+        try:
+            with proc.stdout:   # closed once drained: a finished job must not keep a pipe open
+                for raw in _iter_progress_lines(proc.stdout):
+                    line = raw.rstrip()
+                    if not line:
+                        continue
+                    with job._lock:
+                        job.lines.append(line)
+                        m = PERCENT_RE.findall(line)
+                        if m:
+                            job.percent = min(100.0, float(m[-1]))
+        except Exception as e:  # noqa: BLE001 -- a dead reader must not leave the job 'running' forever
+            proc.kill()
+            proc.wait()
+            if result_path is not None:
+                result_path.unlink(missing_ok=True)
             with job._lock:
-                job.lines.append(line)
-                m = PERCENT_RE.findall(line)
-                if m:
-                    job.percent = min(100.0, float(m[-1]))
+                job.state, job.error, job.finished = "failed", f"lost the job's output: {e}", time.time()
+            return
         code = proc.wait()
         result, result_error = None, None
         if code == 0 and result_path is not None:
@@ -716,7 +730,7 @@ _PERMISSION_HINT = ("macOS may be blocking this folder -- allow the app running 
                     "(or Full Disk Access)")
 
 
-def _raise_for_os_error(e: OSError) -> None:
+def _raise_for_os_error(e: OSError) -> NoReturn:
     """F6: an OSError while reading or copying an image is the client's problem, not a 500."""
     if isinstance(e, PermissionError):
         raise ApiError(str(e), status=403, hint=_PERMISSION_HINT) from None
