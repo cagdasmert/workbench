@@ -1,0 +1,103 @@
+{
+  "id": "image-gen",
+  "name": "Images",
+  "version": "1.0.0",
+  "apiVersion": "1.0",
+  "main": "./dist/index.js",
+  "activationEvents": [
+    "onCommand:imagegen.open",
+    "onCommand:imagegen.generate"
+  ],
+  "contributes": {
+    "panels": [
+      {
+        "id": "imagegen.main",
+        "title": "Images"
+      }
+    ],
+    "menu": [
+      {
+        "command": "imagegen.open",
+        "label": "Images",
+        "group": "tools"
+      }
+    ],
+    "commands": [
+      {
+        "id": "imagegen.open",
+        "title": "Open Images",
+        "args": {
+          "type": "object",
+          "properties": {},
+          "required": []
+        }
+      },
+      {
+        "id": "imagegen.generate",
+        "title": "Generate an Image",
+        "args": {
+          "type": "object",
+          "properties": {
+            "prompt": {
+              "type": "string",
+              "description": "What to draw"
+            },
+            "model": {
+              "type": "string",
+              "description": "Repo id or absolute folder path; empty uses the configured default",
+              "default": ""
+            },
+            "steps": {
+              "type": "number",
+              "description": "Sampling steps; 0 uses the model default",
+              "default": 0
+            },
+            "seed": {
+              "type": "number",
+              "description": "Seed; 0 means random",
+              "default": 0
+            }
+          },
+          "required": ["prompt"]
+        }
+      }
+    ],
+    "settings": {
+      "daemonUrl": {
+        "type": "string",
+        "default": "http://127.0.0.1:8077",
+        "description": "Where `modelctl serve` is listening. Only 127.0.0.1:8077 and localhost:8077 are reachable — a different port needs a matching net:fetch permission in plugin.json."
+      },
+      "token": {
+        "type": "string",
+        "default": "",
+        "description": "Sent as X-Modelctl-Token. Leave empty unless the daemon was started with --token."
+      },
+      "model": {
+        "type": "string",
+        "default": "mflux-community/z-image-turbo-mflux-q8",
+        "description": "Text-to-image model: a repo id pulled with modelctl, or an absolute folder path whose name contains the model family (e.g. z-image-turbo)."
+      },
+      "outputDir": {
+        "type": "string",
+        "default": "",
+        "description": "Folder generated images are written to. Empty uses ~/Pictures/Workbench. Must already exist."
+      },
+      "historyLimit": {
+        "type": "number",
+        "default": 200,
+        "description": "How many past generations the history strip keeps."
+      }
+    },
+    "keybindings": [
+      {
+        "command": "imagegen.open",
+        "key": "cmd+shift+g"
+      }
+    ]
+  },
+  "permissions": [
+    "net:fetch:127.0.0.1:8077",
+    "net:fetch:localhost:8077"
+  ]
+}

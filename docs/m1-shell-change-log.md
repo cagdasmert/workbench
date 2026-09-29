@@ -1522,3 +1522,119 @@ The remaining failures are framing, not invention. Retrieval choosing the wrong 
 (entry 38) is untouched by this change and is still the ceiling.
 
 Tests: 5 new daemon tests (91 total) and 3 plugin tests rewritten or added (44 in the plugin).
+
+---
+
+## 42 · Images M1: an mflux runtime, and one image job at a time
+
+**Plugin:** image-gen (vault PRD P4) · **Verdict:** DAEMON ONLY — no workbench code yet
+
+`image.py` beside `asr.py`, and six routes under `/v1/generate/image` on `modelctld`. Design
+deltas over the PRD are in `docs/superpowers/specs/2026-09-25-image-gen-design.md`; the plan is
+`docs/superpowers/plans/2026-09-25-image-gen-m1-wire.md`.
+
+**The PRD's runtime was not the runtime.** `image_gen.py` uses diffusers and a single `pipe(prompt)` call: no
+image input, no Z-Image preset, and Qwen-Image-Edit at bf16 does not fit in 48 GB. `image.py` runs mflux 0.20 on
+pre-quantized `mflux-community` weights instead. `image_gen.py` stays as the standalone CLI.
+
+**One image job at a time, under one lock.** `JobStore.claim` checks for a conflict and adds the job in a single
+lock hold. Same repo conflicts as before; with `exclusive_kind`, so does the same kind. That closes the
+check-then-add gap `running_for` left, and it is what stops two image models swapping together.
+
+**Loading has no percent.** `image.py` switches tqdm off and prints its own `step i/n  p%` lines from an mflux
+callback. Nothing before the loop contains `%`, so `percent: null` means "loading model" without a new job field.
+
+**A model is a repo id or a folder path.** Downloads are the user's, through modelctl. A repo id is found wherever
+modelctl put it. A value starting with `/` or `~` is loaded exactly as given, never looked up, and must name its
+family in its path, as modelctl's `models--org--name` layout always does.
+
+**Verified** on the real models (Z-Image Turbo q8, SeedVR2 3B, M4 Pro, 48 GB):
+- Generate, 1024², no steps sent → 9 steps. load 4.05 s, generate 104.7 s, peak 13.8 GB.
+- The same seed twice → pixel-identical (sha256 of the decoded pixels).
+- A second POST while one ran → 409 naming the running job.
+- Upscale 2× → 2048×2048, load 1.38 s, generate 56.07 s, peak 18.2 GB.
+- `/file` and `/save` (the second save lands as `-2.png`).
+- The second run gave the model as a folder path (`modelctl path`) and produced the same pixels.
+- 84 new daemon tests (175 total). No test loads weights.
+
+**Verified, surprising:** loading was fast enough that the `percent: null` window closed before a poll
+landed inside it on the first attempt — the job had already reached `step 1/9  11%` by the time the first
+status check ran. Measured: `load_s` was about 4 s on both generate runs (4.05 s job 1, 3.62 s job 2), and
+`gen_s` was about 101–105 s for the 9 z-image-turbo steps at 1024² (104.7 s job 1, 100.67 s job 2) —
+roughly 11 s per step. The first run's `gen_s` was 4.03 s longer than the second's (104.7 s against
+100.67 s), while its `load_s` was only 0.43 s longer (4.05 s against 3.62 s). That is what lazy loading
+would predict: the extra first-run cost shows up in generation, not in load. `modelctl ls` only stats
+files and reads a small JSON sidecar, and the
+controller's pre-task check only ran `stat` and compared sizes — neither reads the multi-GB safetensors
+contents, so a warm OS page cache does not explain the gap. The likely explanation is lazy loading: MLX
+builds weight arrays lazily, so `load_s` (timed around model construction in `image.py`'s `run()`) likely
+measures constructing the model graph, and the actual weight reads likely land inside `gen_s`, on whichever
+step first touches each array — which is also why "Loading model…" (`percent: null`) is short in practice:
+most weight I/O happens after `generating  0%` is already printed. Upscale's SeedVR2 pass was likewise
+quick: 56 s total for a 2× pass on a 1024² source. One consequence for later milestones: generation
+dominates a run (about 100 s against a few seconds of load), so these numbers do not justify the warm
+worker that spec decision 2 left open.
+
+**Not yet verified:** editing — the edit model is pulled at the facade spike, which decides `editModel`.
+
+**Contract impact:** none. Workbench is untouched so far.
+
+---
+
+## 43 · Images M2: a panel over the wire, and a strip that remembers
+
+**Plugin:** image-gen (vault PRD P4) · **Verdict:** PLUGIN ADAPTED — no shell change, no SDK change
+
+**The daemon is the only record of a job; the panel only asks.** On mount it reads `GET /v1/jobs`: a running image job
+gets its placeholder tile back, and one that finished while no panel watched joins the strip. `imagegen.generate` posts
+its own job, so it works without a panel. It then nudges an already-open panel to look again, because `openPanel` on the
+active panel does not remount it. The nudge carries no data and queues nothing.
+
+**Loading is visible.** The status reads "Loading model…" while `percent` is null, which M1 made exactly the load phase,
+and "Generating N%" after that.
+
+**History is content, on purpose.** `ctx.storage.history` holds each result's 512 px JPEG preview (PRD §8), capped at
+`historyLimit` (default 200). The full image is only ever a path on disk, shown under every result.
+
+**A model setting can be a folder path.** The model select marks a repo the catalog lacks as "not downloaded" with the
+pull command, but never a folder path, which the catalog cannot know about.
+
+**Verified in the app** (2026-09-29, by the user):
+- **Open:** `cmd+shift+g` opens Images, the model select shows `z-image-turbo-mflux-q8`, and Steps shows `9` as its placeholder (criterion 1).
+- **Generate:** Type a prompt and press Generate. The status reads `Loading model…`, then `Generating N%`. The image appears with its file path under it, and a tile joins the strip (criterion 5).
+- **Close mid-run:** Start another generation and switch to a different panel while it says `Loading model…`. Come back to Images: the placeholder tile and status are back, and the result lands in the strip.
+- **Restart:** Quit the app, stop and restart `modelctl serve`, then run `npm run dev` again. The strip still shows the tiles from Generate and Close mid-run, and clicking a tile shows that image and its path (criterion 2, first half).
+- **Seed:** Click 🔒, which fills a seed if the field is empty, then generate twice with the same prompt. The two images are identical (criterion 3, by eye).
+- **Command:** From the palette, run *Generate an Image* with no arguments. It opens the Images panel with the prompt focused, ready to type into.
+- **Offline:** Stop `modelctl serve`, then reopen the panel. It says the image daemon isn't running and shows `modelctl serve`.
+
+**Contract impact:** none.
+
+---
+
+## 44 · A disposed registration leaves the host's list
+
+**Host:** plugin-host · **Verdict:** HOST FIX — no SDK change, no contract change
+
+Every registration goes through the host's `track` helper into `rec.disposables`, so
+deactivate can unwind whatever a plugin leaves behind (invariant 8). The list only ever
+grew. A panel subscribes to `settings.onChange` in an effect and disposes the result on
+unmount. That removed the listener but left the Disposable in the list until the plugin
+deactivated. Transcribe, vault-search, model-manager and image-gen all do this, so opening
+and closing a panel N times left N dead entries behind.
+
+`track` now returns a Disposable that removes itself from `rec.disposables` when the plugin
+disposes it, and runs its teardown only once, however often `dispose()` is called. Deactivate
+still unwinds whatever is left, in reverse, each in its own try/catch. It iterates a copy, so
+an entry leaving the live list mid-unwind is safe. A registration the plugin already
+disposed is no longer in the list, so it is never unwound twice.
+
+Nothing a plugin sees changed: every registration still returns a `Disposable`, and disposal
+tests that count `disposables` after activation are unaffected, because nothing disposes
+there. Two host tests cover it:
+- a subscription disposed five times, as five panel mounts, leaves the list at its previous
+  length;
+- deactivate still unwinds the live registrations in reverse, around one the plugin disposed
+  (twice).
+
+Both fail without the fix. Tests, measured on its branch off `main`: 175 vitest (2 new), `tsc -b` clean.

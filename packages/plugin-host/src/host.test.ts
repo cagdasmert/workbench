@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Disposable, Plugin, PluginManifest } from '@workbench/plugin-sdk';
+import type { Disposable, Plugin, PluginContext, PluginManifest } from '@workbench/plugin-sdk';
 import { createPluginHost, type PluginHost, type WorkbenchHostBridge } from './index.js';
 
 const PLUGIN_ID = 'test';
@@ -136,6 +136,51 @@ describe('disposal', () => {
     await host.deactivate(PLUGIN_ID);
 
     expect(calls).toBe(1);
+  });
+
+  it('drops a registration the plugin disposes itself, however often a panel remounts', async () => {
+    let context: PluginContext | undefined;
+    const host = hostFor({
+      activate(ctx) {
+        context = ctx;
+        ctx.registerPanel('test.main', { mount: () => undefined });
+      },
+    });
+    await host.activate(PLUGIN_ID);
+    const rec = host.get(PLUGIN_ID);
+    if (rec === undefined || context === undefined) throw new Error('not active');
+    expect(rec.disposables).toHaveLength(1);
+
+    for (let mount = 0; mount < 5; mount += 1) {
+      const sub = context.settings.onChange(() => undefined);   // what a panel does on mount…
+      expect(rec.disposables).toHaveLength(2);
+      await sub.dispose();                                      // …and on unmount
+      expect(rec.disposables).toHaveLength(1);
+    }
+  });
+
+  it('still unwinds the live registrations in reverse, around one the plugin disposed', async () => {
+    const order: string[] = [];
+    let context: PluginContext | undefined;
+    const host = hostFor({ activate(ctx) { context = ctx; } });
+    await host.activate(PLUGIN_ID);
+    if (context === undefined) throw new Error('not active');
+
+    push(host, () => void order.push('first'));
+    const sub = context.settings.onChange(() => undefined);
+    push(host, () => void order.push('second'));
+    context.registerPanel('test.live', { mount: () => undefined });
+    push(host, () => void order.push('third'));
+
+    await sub.dispose();
+    await sub.dispose();   // a second dispose is a no-op, not a second removal
+    expect(host.get(PLUGIN_ID)?.disposables).toHaveLength(4);
+
+    await host.deactivate(PLUGIN_ID);
+
+    expect(order).toEqual(['third', 'second', 'first']);
+    expect(host.getPanel('test.live')).toBeUndefined();
+    expect(host.get(PLUGIN_ID)?.disposables).toEqual([]);
   });
 
   it('unwinds even when the plugin deactivate() throws', async () => {

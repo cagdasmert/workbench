@@ -3,6 +3,10 @@
 Local macOS desktop app hosting small utilities (mermaid viewer, image viewer, JSON tools) as
 plugins. Electron + TypeScript + React, npm workspaces.
 
+`daemon/` is the Python side: `modelctl` and the `modelctld` HTTP daemon that the model-backed
+plugins call over `net.fetch`. It is not an npm workspace, and its venv lives outside the repo.
+See `daemon/README.md`.
+
 **The plugin contract is the product. The features are disposable.** Optimise every decision
 for the contract staying stable, not for shipping a viewer faster.
 

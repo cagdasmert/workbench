@@ -3,57 +3,78 @@ import type { PluginContext } from '@workbench/plugin-sdk';
 /**
  * The only file in this plugin that knows HTTP exists.
  *
- * Same shape as model-manager's `CatalogClient`, deliberately not shared with
- * it: each plugin owns its wire types (PRD README, "shared manifest
- * boilerplate"), and a plugin importing another plugin's source would be a
- * dependency the host knows nothing about. The panel talks to `AsrClient` and
- * would not notice if the transport changed.
+ * Same shape as transcribe's `AsrClient`, deliberately not shared with it:
+ * each plugin owns its wire types, and a plugin importing another plugin's
+ * source would be a dependency the host knows nothing about. The panel talks
+ * to `ImageClient` and would not notice if the transport changed.
  */
 
-// ─── wire types (mirror modelctld.py / asr.py) ───────────────
-export interface Probe {
-  path: string;
-  name: string;
-  size: number;
-  duration: number | null;
-  has_audio: boolean;
+// ─── wire types (mirror daemon/modelctld.py and daemon/image.py) ───
+export type Role = 'generate' | 'edit' | 'upscale';
+
+/** One row of GET /v1/generate/image/models: a downloaded repo and how to run it. */
+export interface ImageModel {
+  repo: string;
+  family: string;
+  role: Role;
+  negative: boolean;
+  defaults: { steps: number | null; width: number | null; height: number | null };
 }
 
-export interface Segment {
-  start: number;
-  end: number;
-  text: string;
-}
-
-export interface Transcript {
-  text: string;
-  segments: Segment[];
-  language: string | null;
-  duration: number;
+/** A finished job's result. Keys the request did not use are absent: image.py drops nulls. */
+export interface ImageResult {
+  mode: Role;
   model: string;
+  seed: number;
+  steps?: number;
+  prompt?: string;
+  negative?: string;
+  instruction?: string;
+  source?: string;
+  factor?: number;
+  width: number;
+  height: number;
+  path: string;
+  preview_b64: string;
+  load_s: number;
+  gen_s: number;
+  peak_gb: number | null;
 }
 
 export type JobState = 'running' | 'done' | 'failed' | 'cancelled';
 
-export interface AsrJob {
+export interface ImageJob {
   id: string;
   kind: string;
-  /** For an asr job, the model. */
+  /** For an image job, the model's catalog repo (or its folder, outside the catalog). */
   repo: string;
   state: JobState;
   started: number;
   finished: number | null;
   elapsed: number;
   exit_code: number | null;
+  /** null while the model loads: image.py prints no '%' before the first step. */
   percent: number | null;
   error: string | null;
-  params: { path?: string; language?: string };
+  params: { mode?: Role; model?: string; prompt?: string; seed?: number; steps?: number };
   /** Only on `job(id)`. */
   log?: string[];
   /** Only on `jobs()`. */
   last_line?: string;
   /** Only on `job(id)`, once done. */
-  result?: Transcript | null;
+  result?: ImageResult | null;
+}
+
+/** POST /v1/generate/image. Absent fields take the model's defaults; an absent seed is random. */
+export interface GenerateRequest {
+  prompt: string;
+  model: string;
+  negative?: string;
+  steps?: number;
+  seed?: number;
+  width?: number;
+  height?: number;
+  out_dir?: string;
 }
 
 export const DEFAULT_DAEMON_URL = 'http://127.0.0.1:8077';
@@ -69,7 +90,12 @@ export const START_COMMAND = 'modelctl serve';
 export type DaemonErrorKind = 'offline' | 'denied' | 'protocol' | 'api';
 
 export class DaemonError extends Error {
-  constructor(message: string, readonly hint: string | undefined, readonly kind: DaemonErrorKind) {
+  constructor(
+    message: string,
+    readonly hint: string | undefined,
+    readonly kind: DaemonErrorKind,
+    readonly status?: number,
+  ) {
     super(message);
     this.name = 'DaemonError';
   }
@@ -81,9 +107,9 @@ export function asDaemonError(err: unknown): DaemonError {
 
 interface ErrorBody { error?: unknown; hint?: unknown }
 
-export class AsrClient {
+export class ImageClient {
   constructor(
-    private readonly ctx: PluginContext,
+    private readonly ctx: Pick<PluginContext, 'net'>,
     private readonly baseUrl: string = DEFAULT_DAEMON_URL,
     private readonly token: string = '',
   ) {}
@@ -92,32 +118,20 @@ export class AsrClient {
 
   health(): Promise<{ ok: boolean; version: string }> { return this.get('/v1/health', 5_000); }
 
-  /** Repos on either drive. Used to mark models that would 404. */
-  async installed(): Promise<string[]> {
-    const inv = await this.get<{ models: Array<{ repo: string }> }>('/v1/catalog/models', 30_000);
-    return inv.models.map((m) => m.repo);
+  /** Downloaded image models and their per-family defaults (spec decision 4). */
+  async models(): Promise<ImageModel[]> {
+    const r = await this.get<{ models: ImageModel[] }>('/v1/generate/image/models', 30_000);
+    return r.models;
   }
 
-  probe(path: string): Promise<Probe> {
-    return this.get(`/v1/generate/asr/probe?path=${encodeURIComponent(path)}`, 30_000);
+  generate(req: GenerateRequest): Promise<ImageJob> {
+    return this.post('/v1/generate/image', req, 30_000);
   }
 
-  start(req: { path: string; model: string; language: string }): Promise<AsrJob> {
-    return this.post('/v1/generate/asr', req);
-  }
+  job(id: string): Promise<ImageJob> { return this.get(`/v1/jobs/${encodeURIComponent(id)}`); }
+  jobs(): Promise<{ jobs: ImageJob[] }> { return this.get('/v1/jobs'); }
 
-  /**
-   * C1: the daemon writes, the plugin only names the folder. It renders the
-   * front matter, refuses to overwrite, and answers with the path it chose.
-   */
-  save(req: { job_id: string; dir: string; timestamps: boolean }): Promise<{ path: string }> {
-    return this.post('/v1/generate/asr/save', req, 30_000);
-  }
-
-  job(id: string): Promise<AsrJob> { return this.get(`/v1/jobs/${encodeURIComponent(id)}`); }
-  jobs(): Promise<{ jobs: AsrJob[] }> { return this.get('/v1/jobs'); }
-
-  /** Terminates the asr.py subprocess; the next poll sees `cancelled`. */
+  /** Terminates the image.py subprocess; the next poll sees `cancelled`. */
   cancel(id: string): Promise<{ cancelling: string }> {
     return this.post(`/v1/jobs/${encodeURIComponent(id)}/cancel`, {});
   }
@@ -157,11 +171,11 @@ export class AsrClient {
         throw new DaemonError(
           `${this.baseUrl} is not in this plugin's net:fetch permissions.`,
           'Settings can only point at 127.0.0.1:8077 or localhost:8077 — anything else '
-          + 'needs a new entry in plugins/transcribe/plugin.json.',
+          + 'needs a new entry in plugins/image-gen/plugin.json.',
           'denied',
         );
       }
-      throw new DaemonError("The transcription daemon isn't running.", START_COMMAND, 'offline');
+      throw new DaemonError("The image daemon isn't running.", START_COMMAND, 'offline');
     }
 
     let parsed: unknown;
@@ -181,6 +195,7 @@ export class AsrClient {
         typeof e.error === 'string' ? e.error : `HTTP ${res.status}`,
         typeof e.hint === 'string' ? e.hint : undefined,
         'api',
+        res.status,
       );
     }
     return parsed as T;

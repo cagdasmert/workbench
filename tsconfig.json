@@ -39,6 +39,9 @@
     },
     {
       "path": "plugins/vault-search"
+    },
+    {
+      "path": "plugins/image-gen"
     }
   ]
 }

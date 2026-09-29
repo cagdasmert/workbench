@@ -499,8 +499,25 @@ export class PluginHost {
   private createContext(rec: PluginRecord): PluginContext {
     const pluginId = rec.manifest.id;
 
+    /**
+     * Every registration is tracked, so deactivate can unwind whatever the
+     * plugin left (invariant 8). A Disposable the plugin disposes itself also
+     * leaves the list, and its teardown runs once however often it is called.
+     * Otherwise a panel that subscribes to settings on every mount would grow
+     * `disposables` for the whole life of the activation.
+     */
     const track = (dispose: () => void): Disposable => {
-      const disposable: Disposable = { dispose };
+      let disposed = false;
+      const disposable: Disposable = {
+        dispose: () => {
+          if (disposed) return;
+          disposed = true;
+          // unwind() iterates a copy, so leaving the live list mid-unwind is safe
+          const at = rec.disposables.indexOf(disposable);
+          if (at !== -1) rec.disposables.splice(at, 1);
+          dispose();
+        },
+      };
       rec.disposables.push(disposable);
       return disposable;
     };
