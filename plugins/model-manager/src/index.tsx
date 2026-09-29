@@ -386,10 +386,7 @@ function Offline({ error, url, onRetry }: {
     <div style={S.centered}>
       <h2 style={S.h2}>{error.message}</h2>
       <p style={S.muted}>{error.hint ?? START_HINT}</p>
-      <pre style={S.code}>
-        cd /Users/cagdasmert/work/tools/huggingface{'\n'}
-        .venv/bin/python modelctl.py serve
-      </pre>
+      <pre style={S.code}>modelctl serve</pre>
       <p style={S.mutedSmall}>Expecting it at {url}.</p>
       <button type="button" style={S.button} onClick={onRetry}>Retry</button>
     </div>
