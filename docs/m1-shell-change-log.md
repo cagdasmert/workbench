@@ -1578,3 +1578,34 @@ worker that spec decision 2 left open.
 **Not yet verified:** editing — the edit model is pulled at the facade spike, which decides `editModel`.
 
 **Contract impact:** none. Workbench is untouched so far.
+
+---
+
+## 43 · Images M2: a panel over the wire, and a strip that remembers
+
+**Plugin:** image-gen (vault PRD P4) · **Verdict:** PLUGIN ADAPTED — no shell change, no SDK change
+
+**The daemon is the only record of a job; the panel only asks.** On mount it reads `GET /v1/jobs`: a running image job
+gets its placeholder tile back, and one that finished while no panel watched joins the strip. `imagegen.generate` posts
+its own job, so it works without a panel. It then nudges an already-open panel to look again, because `openPanel` on the
+active panel does not remount it. The nudge carries no data and queues nothing.
+
+**Loading is visible.** The status reads "Loading model…" while `percent` is null, which M1 made exactly the load phase,
+and "Generating N%" after that.
+
+**History is content, on purpose.** `ctx.storage.history` holds each result's 512 px JPEG preview (PRD §8), capped at
+`historyLimit` (default 200). The full image is only ever a path on disk, shown under every result.
+
+**A model setting can be a folder path.** The model select marks a repo the catalog lacks as "not downloaded" with the
+pull command, but never a folder path, which the catalog cannot know about.
+
+**Verified in the app** (2026-09-29, by the user):
+- **Open:** `cmd+shift+g` opens Images, the model select shows `z-image-turbo-mflux-q8`, and Steps shows `9` as its placeholder (criterion 1).
+- **Generate:** Type a prompt and press Generate. The status reads `Loading model…`, then `Generating N%`. The image appears with its file path under it, and a tile joins the strip (criterion 5).
+- **Close mid-run:** Start another generation and switch to a different panel while it says `Loading model…`. Come back to Images: the placeholder tile and status are back, and the result lands in the strip.
+- **Restart:** Quit the app, stop and restart `modelctl serve`, then run `npm run dev` again. The strip still shows the tiles from Generate and Close mid-run, and clicking a tile shows that image and its path (criterion 2, first half).
+- **Seed:** Click 🔒, which fills a seed if the field is empty, then generate twice with the same prompt. The two images are identical (criterion 3, by eye).
+- **Command:** From the palette, run *Generate an Image* with no arguments. It opens the Images panel with the prompt focused, ready to type into.
+- **Offline:** Stop `modelctl serve`, then reopen the panel. It says the image daemon isn't running and shows `modelctl serve`.
+
+**Contract impact:** none.
