@@ -1609,3 +1609,32 @@ pull command, but never a folder path, which the catalog cannot know about.
 - **Offline:** Stop `modelctl serve`, then reopen the panel. It says the image daemon isn't running and shows `modelctl serve`.
 
 **Contract impact:** none.
+
+---
+
+## 44 · A disposed registration leaves the host's list
+
+**Host:** plugin-host · **Verdict:** HOST FIX — no SDK change, no contract change
+
+Every registration goes through the host's `track` helper into `rec.disposables`, so
+deactivate can unwind whatever a plugin leaves behind (invariant 8). The list only ever
+grew. A panel subscribes to `settings.onChange` in an effect and disposes the result on
+unmount. That removed the listener but left the Disposable in the list until the plugin
+deactivated. Transcribe, vault-search, model-manager and image-gen all do this, so opening
+and closing a panel N times left N dead entries behind.
+
+`track` now returns a Disposable that removes itself from `rec.disposables` when the plugin
+disposes it, and runs its teardown only once, however often `dispose()` is called. Deactivate
+still unwinds whatever is left, in reverse, each in its own try/catch. It iterates a copy, so
+an entry leaving the live list mid-unwind is safe. A registration the plugin already
+disposed is no longer in the list, so it is never unwound twice.
+
+Nothing a plugin sees changed: every registration still returns a `Disposable`, and disposal
+tests that count `disposables` after activation are unaffected, because nothing disposes
+there. Two host tests cover it:
+- a subscription disposed five times, as five panel mounts, leaves the list at its previous
+  length;
+- deactivate still unwinds the live registrations in reverse, around one the plugin disposed
+  (twice).
+
+Both fail without the fix. Tests, measured on its branch off `main`: 175 vitest (2 new), `tsc -b` clean.
